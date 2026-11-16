@@ -1,0 +1,13 @@
+services:
+  interviewhub:
+    build: .
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - DATA_DIR=/app/data
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - SKILLS_DIR=${SKILLS_DIR:-}
+    restart: unless-stopped

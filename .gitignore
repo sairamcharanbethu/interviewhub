@@ -1,0 +1,16 @@
+node_modules
+.next
+out
+data/
+.env
+.env.local
+.env*.local
+*.log
+.DS_Store
+
+!.env.example
+tsconfig.tsbuildinfo
+
+# Test artifacts
+test-results/
+playwright-report/

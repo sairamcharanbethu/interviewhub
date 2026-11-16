@@ -53,13 +53,34 @@ export default function CandidateDetail() {
       await load();
     } catch (e) { toast(errMsg(e), 'err'); } finally { setUploading(false); }
   };
-  const approveSkills = async (r: Resume) => {
-    if (!c || !r.parsed?.skills?.length) return;
+  // Apply parsed resume data to the profile: merge skills, and fill any
+  // BLANK profile field from the parsed data. Never overwrites a field the
+  // user already filled — those keep the user's value.
+  const applyParsed = async (r: Resume) => {
+    if (!c || !r.parsed) return;
     setBusy(r.id);
     try {
-      const merged = [...new Set([...(c.skills || []), ...(r.parsed.skills || [])])];
-      const updated = await apiPatch<{ candidate: Candidate }>(`/api/candidates/${id}`, { skills: merged });
-      setC(updated.candidate); toast(`Approved ${r.parsed.skills.length} parsed skills onto the profile`);
+      const p = r.parsed;
+      const patch: Record<string, unknown> = {};
+      const changed: string[] = [];
+      const blank = (v: unknown) => v == null || v === '' || (Array.isArray(v) && v.length === 0);
+      if (p.skills?.length) {
+        const merged = [...new Set([...(c.skills || []), ...p.skills])];
+        if (merged.length !== (c.skills || []).length) { patch.skills = merged; changed.push(`${merged.length - (c.skills || []).length} new skills`); }
+      }
+      if (blank(c.headline) && p.headline) { patch.headline = p.headline; changed.push('headline'); }
+      if (blank(c.summary) && p.summary) { patch.summary = p.summary; changed.push('summary'); }
+      if (blank(c.location) && p.location) { patch.location = p.location; changed.push('location'); }
+      if (blank(c.email) && p.emails?.[0]) { patch.email = p.emails[0]; changed.push('email'); }
+      if (blank(c.phone) && p.phones?.[0]) { patch.phone = p.phones[0]; changed.push('phone'); }
+      if (blank(c.employment) && p.employment?.length) { patch.employment = p.employment; changed.push('employment history'); }
+      if (blank(c.education) && p.education?.length) { patch.education = p.education; changed.push('education'); }
+      if (blank(c.certifications) && p.certifications?.length) { patch.certifications = p.certifications; changed.push('certifications'); }
+      if (c.total_experience_years == null && p.total_experience_years != null) { patch.total_experience_years = p.total_experience_years; changed.push('experience'); }
+      if (!changed.length) { toast('Nothing to apply — the profile already has everything this resume parsed.'); return; }
+      const updated = await apiPatch<{ candidate: Candidate }>(`/api/candidates/${id}`, patch);
+      setC(updated.candidate);
+      toast(`Applied to profile: ${changed.join(', ')}. Fields you had already filled were left untouched.`);
     } catch (e) { toast(errMsg(e), 'err'); } finally { setBusy(''); }
   };
 
@@ -161,14 +182,23 @@ export default function CandidateDetail() {
       <Modal open={!!viewResume} onClose={() => setViewResume(null)} title={viewResume ? `${viewResume.filename} — extracted text` : ''} wide>
         {viewResume ? (
           <div className="space-y-4">
-            {viewResume.parsed?.skills?.length ? (
+            {viewResume.parsed ? (
               <div>
-                <h3 className="font-semibold">Parsed skills</h3>
-                <div className="mt-2 flex flex-wrap gap-1">{viewResume.parsed.skills.map((s) => <Badge key={s} tone="blue">{s}</Badge>)}</div>
-                <Button variant="secondary" className="mt-3" disabled={busy === viewResume.id} onClick={() => approveSkills(viewResume)}>
-                  {busy === viewResume.id ? 'Approving…' : 'Approve parsed skills onto profile'}
+                <h3 className="font-semibold">Parsed from this resume</h3>
+                <dl className="mt-2 space-y-1 text-sm">
+                  {viewResume.parsed.name ? <p><span className="font-medium">Name:</span> {viewResume.parsed.name}</p> : null}
+                  {viewResume.parsed.headline ? <p><span className="font-medium">Headline:</span> {viewResume.parsed.headline}</p> : null}
+                  {viewResume.parsed.location ? <p><span className="font-medium">Location:</span> {viewResume.parsed.location}</p> : null}
+                  {viewResume.parsed.total_experience_years != null ? <p><span className="font-medium">Experience:</span> {viewResume.parsed.total_experience_years} years</p> : null}
+                  {viewResume.parsed.employment?.length ? <p><span className="font-medium">Employment:</span> {viewResume.parsed.employment.map((e) => String((e as Record<string, unknown>).title || (e as Record<string, unknown>).employer || (e as Record<string, unknown>).raw || '')).filter(Boolean).join('; ')}</p> : null}
+                </dl>
+                {viewResume.parsed.skills?.length ? (
+                  <div className="mt-2 flex flex-wrap gap-1">{viewResume.parsed.skills.map((s) => <Badge key={s} tone="blue">{s}</Badge>)}</div>
+                ) : null}
+                <Button variant="secondary" className="mt-3" disabled={busy === viewResume.id} onClick={() => applyParsed(viewResume)}>
+                  {busy === viewResume.id ? 'Applying…' : 'Apply parsed data to profile'}
                 </Button>
-                <p className="mt-1 text-xs text-gray-500">Merges the parsed skills into this candidate&apos;s profile skills (no duplicates).</p>
+                <p className="mt-1 text-xs text-gray-500">Merges parsed skills and fills any blank profile fields (headline, summary, location, contact, employment, education, certifications, experience). Fields you already filled are never overwritten.</p>
               </div>
             ) : null}
             {viewResume.parsed?.certifications?.length ? <p className="text-sm"><span className="font-semibold">Parsed certifications:</span> {viewResume.parsed.certifications.join(', ')}</p> : null}

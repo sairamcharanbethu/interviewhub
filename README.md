@@ -145,8 +145,19 @@ hand-crafted backup contains one), and rebuilds full-text search. Details:
   offline fallback and an `ai_error` note.
 - **Parsers are heuristic.** The resume/JD parsers use keyword lists and
   regexes; unusual formats (tables, two-column PDFs, scanned images) parse
-  poorly. Parsed skills are never auto-applied to a profile — the candidate
-  page has an explicit "Approve parsed skills onto profile" step.
+  poorly. Parsed data is never auto-applied to a profile — **Create from
+  resume** and **Add from job link / JD** open pre-filled forms for review
+  and edit, and the candidate page has an explicit "Apply parsed data to
+  profile" step that only fills blank fields.
+- **Auto-import (resume-first / JD-first).** `POST /api/candidates/parse-resume`
+  (multipart file) and `POST /api/applications/parse-jd` (`{jd_text}` or
+  `{job_url}`, or a JD file) parse without creating anything; the UI then
+  opens a pre-filled form. Fields the source does not state stay blank.
+  URL fetching for the parse endpoint uses shared
+  `lib/parse/fetch-url.ts`, which returns a clear 502 (login wall /
+  JavaScript-rendered / blocked — paste the text instead) and never saves
+  an empty JD. LinkedIn blocks server fetches, so pasting the job
+  description is the fallback there.
 - **Permanent candidate/application deletes remove DB rows (with FTS
   cleanup) but uploaded files under `data/uploads/` are only removed for
   resume deletes;** a permanently deleted candidate's upload files can

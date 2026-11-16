@@ -14,7 +14,7 @@ export interface Resume {
   id: string; candidate_id: string; filename: string; stored_path: string;
   mime?: string | null; size_bytes?: number | null; version: number;
   extracted_text?: string | null;
-  parsed?: { skills?: string[]; employment?: unknown[]; education?: unknown[]; certifications?: string[]; emails?: string[]; phones?: string[]; extraction_quality?: number } | null;
+  parsed?: { name?: string | null; location?: string | null; headline?: string | null; summary?: string | null; total_experience_years?: number | null; skills?: string[]; employment?: unknown[]; education?: unknown[]; certifications?: string[]; emails?: string[]; phones?: string[]; extraction_quality?: number } | null;
   is_active: boolean; created_at: string;
 }
 export interface Application {
@@ -23,6 +23,7 @@ export interface Application {
   job_url?: string | null; recruiter?: unknown; application_date?: string | null;
   status?: string | null; interview_date?: string | null; stage?: string | null;
   jd_text?: string | null; jd_parsed?: {
+    company?: string | null; title?: string | null; location?: string | null; employment_type?: string | null;
     required_skills?: string[]; preferred_skills?: string[]; languages?: string[];
     frameworks?: string[]; tools?: string[]; cloud?: string[]; responsibilities?: string[];
     experience_years?: number | null; education?: string[]; certifications?: string[]; keywords?: string[];

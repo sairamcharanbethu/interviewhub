@@ -1,10 +1,11 @@
 'use client';
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import Link from 'next/link';
 import { apiDelete, apiGet, apiPatch, apiPost } from '@/lib/api';
 import { useApp } from '@/components/context';
 import { Badge, Button, ConfirmDialog, EmptyState, ErrorBox, Field, Input, Modal, Spinner } from '@/components/ui';
-import CandidateForm, { type CandidateFormData } from '@/components/CandidateForm';
+import CandidateForm, { type CandidateFormData, type CandidatePrefill } from '@/components/CandidateForm';
+import type { ParsedResume } from '@/lib/parse/resume';
 import type { Candidate } from '@/lib/types';
 import { errMsg, fmtDate } from '@/lib/types';
 
@@ -19,6 +20,51 @@ export default function CandidatesPage() {
   const [formOpen, setFormOpen] = useState(false);
   const [editing, setEditing] = useState<Candidate | null>(null);
   const [saving, setSaving] = useState(false);
+  // Resume-first creation: parsed resume + the original file, held only until the user saves.
+  const [parsing, setParsing] = useState(false);
+  const [prefill, setPrefill] = useState<CandidatePrefill | null>(null);
+  const [prefillNote, setPrefillNote] = useState('');
+  const [autoFilled, setAutoFilled] = useState<string[]>([]);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [formKey, setFormKey] = useState(0);
+  const resumeInputRef = useRef<HTMLInputElement>(null);
+
+  const closeForm = () => { setFormOpen(false); setEditing(null); setPrefill(null); setPrefillNote(''); setAutoFilled([]); setPendingFile(null); };
+
+  const parseResumeFile = async (file: File) => {
+    setParsing(true);
+    try {
+      const fd = new FormData(); fd.append('file', file);
+      const res = await fetch('/api/candidates/parse-resume', { method: 'POST', body: fd });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { error?: string }).error || `Could not read this resume (${res.status})`);
+      const p = (data as { parsed: ParsedResume }).parsed;
+      const filled: string[] = [];
+      if (p.name) filled.push('name');
+      if (p.emails?.length) filled.push('email');
+      if (p.phones?.length) filled.push('phone');
+      if (p.location) filled.push('location');
+      if (p.headline) filled.push('headline');
+      if (p.summary) filled.push('summary');
+      if (p.total_experience_years != null) filled.push('exp');
+      if (p.skills?.length) filled.push('skills');
+      if (p.certifications?.length) filled.push('certs');
+      if (p.employment?.length) filled.push('employment');
+      if (p.education?.length) filled.push('education');
+      setPrefill({
+        name: p.name, email: p.emails?.[0] ?? null, phone: p.phones?.[0] ?? null,
+        location: p.location, headline: p.headline, summary: p.summary,
+        total_experience_years: p.total_experience_years,
+        skills: p.skills || [], employment: p.employment || [], education: p.education || [],
+        certifications: p.certifications || [],
+      });
+      setAutoFilled(filled);
+      setPendingFile(file);
+      setPrefillNote(`Filled from ${file.name} — check and edit before saving. Anything the resume did not state was left blank.`);
+      setEditing(null); setFormKey((k) => k + 1); setFormOpen(true);
+      if (!p.name) toast('Resume read, but no name was found — please enter the name.', 'err');
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setParsing(false); }
+  };
   const [confirm, setConfirm] = useState<{ kind: 'archive' | 'delete' | 'permanent' | 'restore'; c: Candidate } | null>(null);
   const [busyId, setBusyId] = useState('');
 
@@ -44,10 +90,20 @@ export default function CandidatesPage() {
         await apiPatch<{ candidate: Candidate }>(`/api/candidates/${editing.id}`, data);
         toast('Candidate updated');
       } else {
-        await apiPost<{ candidate: Candidate }>('/api/candidates', data);
+        const created = await apiPost<{ candidate: Candidate }>('/api/candidates', data);
         toast('Candidate created');
+        // Resume-first flow: attach the same file the profile was filled from as v1.
+        if (pendingFile) {
+          try {
+            const fd = new FormData(); fd.append('file', pendingFile);
+            const res = await fetch(`/api/candidates/${created.candidate.id}/resumes`, { method: 'POST', body: fd });
+            const rd = await res.json().catch(() => ({}));
+            if (!res.ok) throw new Error((rd as { error?: string }).error || `Resume attach failed (${res.status})`);
+            toast(`Resume ${pendingFile.name} attached as v1`);
+          } catch (e) { toast(`Candidate created, but the resume could not be attached: ${errMsg(e)}`, 'err'); }
+        }
       }
-      setFormOpen(false); setEditing(null); await load(); await refreshCandidates();
+      closeForm(); await load(); await refreshCandidates();
     } catch (e) { toast(errMsg(e), 'err'); } finally { setSaving(false); }
   };
   const act = async (kind: string, c: Candidate) => {
@@ -68,8 +124,15 @@ export default function CandidatesPage() {
     <div className="space-y-4">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <h1 className="text-2xl font-bold">Candidates</h1>
-        <Button onClick={() => { setEditing(null); setFormOpen(true); }}>+ New candidate</Button>
+        <div className="flex flex-wrap gap-2">
+          <input ref={resumeInputRef} type="file" accept=".pdf,.docx,.txt,.md" className="hidden" onChange={(e) => { const f = e.target.files?.[0]; if (f) parseResumeFile(f); e.target.value = ''; }} />
+          <Button variant="secondary" disabled={parsing} onClick={() => resumeInputRef.current?.click()}>
+            {parsing ? 'Reading resume…' : '⬆ Create from resume'}
+          </Button>
+          <Button onClick={() => { setEditing(null); setPrefill(null); setFormOpen(true); }}>+ New candidate</Button>
+        </div>
       </div>
+      <p className="text-sm text-gray-500">Upload a resume and the profile is filled in for you — name, contact, headline, skills, employment, education and certifications, ready to check and edit. Or create a profile manually.</p>
       <div className="flex flex-wrap items-center gap-3">
         <Input aria-label="Search candidates" placeholder="Search name, email, headline, skill…" value={q} onChange={(e) => setQ(e.target.value)} className="max-w-sm" />
         <label className="flex items-center gap-1.5 text-sm"><input type="checkbox" checked={showArchived} onChange={(e) => setShowArchived(e.target.checked)} /> Show archived</label>
@@ -113,8 +176,8 @@ export default function CandidatesPage() {
           ))}
         </div>
       )}
-      <Modal open={formOpen} onClose={() => setFormOpen(false)} title={editing ? `Edit ${editing.name}` : 'New candidate'} wide>
-        <CandidateForm initial={editing} onSubmit={submit} onCancel={() => setFormOpen(false)} saving={saving} />
+      <Modal open={formOpen} onClose={closeForm} title={editing ? `Edit ${editing.name}` : prefill ? 'New candidate — from resume' : 'New candidate'} wide>
+        <CandidateForm key={formKey} initial={editing} prefill={prefill} prefillNote={prefillNote} autoFilled={autoFilled} onSubmit={submit} onCancel={closeForm} saving={saving} />
       </Modal>
       <ConfirmDialog
         open={!!confirm} onClose={() => setConfirm(null)}

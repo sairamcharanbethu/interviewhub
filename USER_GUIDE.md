@@ -6,33 +6,50 @@ InterviewHub follows one flow: **Candidate → Resume → Application → JD →
 Match → Prep → Skill**. Everything else (STAR stories, settings, backup)
 supports that flow.
 
-## 1. Candidates
+## 1. Candidates — start from the resume, not a blank form
 
-`/candidates` — create a profile with name, contact, location, headline,
-experience, skills, certifications. One candidate can be the **default**
-(it is pre-selected across pages). Candidates can be **archived** (hidden
-until "Show archived") and **restored**; soft-deleted candidates can be
-restored from the same page, and permanently deleted from **Settings →
-Danger zone**.
+`/candidates` — the fastest path is **Create from resume**: upload a PDF,
+DOCX, TXT or MD resume and the profile form opens pre-filled — name,
+email, phone, location, headline, summary, experience, skills,
+employment, education and certifications, each marked "Filled from
+resume". **Check and edit every field before saving**; anything the resume
+did not state is left blank, and nothing is invented. On save, the same
+file is attached as the candidate's v1 resume. The manual **+ New
+candidate** form is still there when there is no resume yet.
+
+One candidate can be the **default** (it is pre-selected across pages).
+Candidates can be **archived** (hidden until "Show archived") and
+**restored**; soft-deleted candidates can be restored from the same page,
+and permanently deleted from **Settings → Danger zone**.
 
 ## 2. Resumes
 
 Open a candidate → **Upload resume** (PDF, DOCX, TXT, MD; max 10 MB). The
-file is parsed (skills, employment, education, certifications, quality
-score) and chunked for search/AI retrieval. Each upload becomes a new
-**version** and is set active; older versions stay listed and can be
+file is parsed (name, location, headline, summary, experience, skills,
+employment with employer + title split, education, certifications,
+quality score) and chunked for search/AI retrieval. Each upload becomes a
+new **version** and is set active; older versions stay listed and can be
 re-activated or deleted. Click **View text** to see the extracted text and
-parsed skills — **Approve parsed skills onto profile** copies the parsed
-skills onto the candidate (this is a deliberate, manual step; parsing is
-heuristic and never auto-applied).
+parsed fields — **Apply parsed data to profile** merges the parsed skills
+and fills any **blank** profile field from the resume. Fields you already
+filled are never overwritten, and parsing is heuristic, never
+auto-applied.
 
-## 3. Applications
+## 3. Applications — start from the job posting, not a blank form
 
-`/applications` — create an application (candidate, company, role title,
-status, dates, notes). **Duplicate** copies it for a re-application.
-**Archive / Restore** hides and brings back an application; **Delete**
-soft-deletes it (resumes and STAR stories are untouched — they belong to the
-candidate, not the application).
+`/applications` — the fastest path is **Add from job link / JD**: paste a
+job URL, paste the job description text, or upload a JD file. The posting
+is read and the form opens pre-filled — company, role title, location and
+employment type, each marked "Filled from the job posting", with the full
+JD text attached. **Check and edit before saving**; company or title the
+posting did not state are left blank for you to fill in. Saving lands you
+on the application detail page with the JD already saved, so **Run Match**
+is one click away. The manual **+ New application** form is untouched.
+
+**Duplicate** copies an application for a re-application. **Archive /
+Restore** hides and brings back an application; **Delete** soft-deletes it
+(resumes and STAR stories are untouched — they belong to the candidate, not
+the application).
 
 ## 4. Job description
 
@@ -40,6 +57,9 @@ Open an application → paste the JD into **Job description** and **Save JD
 text** (or **Import from URL**). The JD is parsed (required/preferred
 skills, experience, certifications) and chunked for retrieval. Pasting is
 the reliable path; URL import needs the posting to be publicly fetchable.
+**LinkedIn blocks server-side fetching** (login wall / 403), as do most
+JavaScript-only job pages — for those, paste the job description text;
+the app says so plainly instead of silently saving an empty JD.
 
 ## 5. Match
 

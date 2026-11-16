@@ -91,6 +91,73 @@ verification). Honest status as of 2026-11-16.
 Tests use temp `DATA_DIR`/`SKILLS_DIR` per file (never `./data`); no test
 pollutes the real database.
 
+## Auto-import — resume-first / JD-first (2026-11-16)
+
+- [x] **Resume parsing extended** (`lib/parse/resume.ts`): `ParsedResume`
+  now carries `name`, `location`, `headline`, `summary`,
+  `total_experience_years` (longest employment range or an explicit
+  "X+ years" statement), plus employer/title split for
+  `Title — Employer`, `Employer | Title`, comma lists, and title-on-the-
+  line-above patterns. Education now splits `degree`/`institution`.
+  Nothing is invented: unstatable fields stay `null`.
+- [x] **`POST /api/candidates/parse-resume`** — multipart upload, same
+  10 MB / pdf/docx/txt/md validation as resume upload; returns
+  `{parsed, extracted_text, quality}`, creates nothing. Empty file → 400.
+- [x] **Create from resume** (`/candidates`): parses, opens the candidate
+  form pre-filled with a "Filled from \<filename\> — check and edit before
+  saving" note and per-field "filled from resume" hints; on save the same
+  file is attached as the v1 resume.
+- [x] **Apply parsed data to profile** (candidate detail → View text):
+  replaces the skills-only approval — merges parsed skills AND fills any
+  blank profile field (headline/summary/location/contact/employment/
+  education/certifications/experience), shows what changed, never
+  overwrites a field the user already filled.
+- [x] **JD inference** (`lib/parse/jd.ts` `inferCompanyTitle`): company
+  (explicit label, "About X", "X is hiring", "Role at X", LinkedIn-style
+  "Company · Location", "Company — Remote/Toronto" header), title (label,
+  "We are hiring a X", first role-noun heading), location, employment
+  type — all nullable, returned on `ParsedJD` without breaking existing
+  tests.
+- [x] **`POST /api/applications/parse-jd`** — `{jd_text}` / `{job_url}` /
+  JD file; returns `{parsed, jd_text, draft}` and creates nothing.
+  URL fetching moved to shared `lib/parse/fetch-url.ts` (used by the new
+  parse endpoint): 502 names the likely cause (login wall /
+  JavaScript-rendered / blocked, incl. LinkedIn) and tells the user to
+  paste the JD text; empty JD → 400. The per-application JD route keeps
+  its existing fetch for now — migrating it to the shared helper is left
+  to the concurrent remediation pass, which is already editing that file.
+- [x] **Add from job link / JD** (`/applications`): URL / pasted text /
+  file → parsed → application form pre-filled with a "Filled from the job
+  posting" note; saving lands on the application detail page with the JD
+  saved, so Run Match is one click away. Manual "New application" flow
+  untouched (no redirect there).
+- [x] **Defects found and fixed (not suppressed):** `inferCompanyTitle`
+  "About X" regex could not match multi-word companies (character class
+  had no space) and lacked the case-insensitive flag; `splitTitleEmployer`
+  mis-assigned the "Employer | Title" order. Both caught by the new tests.
+  E2E initially failed after adding the detail-page redirect — the
+  redirect was scoped to JD-first creation only, and the remaining failure
+  was a stale production build (E2E runs `next start`); rebuilt and it
+  passes.
+
+### Auto-import test results (2026-11-16, this change)
+
+| Command | Result |
+| --- | --- |
+| `npx tsc --noEmit` | PASS, no errors |
+| `npm run build` | PASS (`✓ Compiled successfully`, incl. `/api/applications/parse-jd` and `/api/candidates/parse-resume`) |
+| `npm test` (Vitest) | **103 passed, 0 failed** (18 files) at the time of this change — new: `tests/unit/resume.test.ts` +4 (name/location/headline/summary/experience, dash/pipe split, title-on-previous-line, blank-fields), `tests/unit/jd.test.ts` +5 (Harris inference, explicit labels, hiring sentence, LinkedIn-style line, blank-fields), `tests/api/auto-import.test.ts` 10 (both parse endpoints, no-creation checks, empty/bad-extension/non-multipart, empty JD, invalid URL → 400, unreachable URL → 502 with paste fallback, JD file upload) |
+| `npm run test:e2e` (Playwright) | **1 passed** after rebuild (see note above) |
+
+Note: a later full-suite run in this same checkout showed 3–4 failures
+in `tests/api/auth.test.ts`, `tests/api/natively.test.ts`,
+`tests/unit/pdf-ocr.test.ts` and `tests/api/cascade.test.ts` (skills_sync
+count) — those belong to a separate, concurrently in-progress remediation
+(auth / Natively / upload-validation) whose uncommitted changes were in
+the working tree at the time; they are NOT part of this auto-import
+change, and none of its files were included in this push. The auto-import
+tests themselves pass in isolation and in the 103-test run above.
+
 ### Playwright E2E — 1 spec, passing
 
 `e2e/flow.spec.ts` (Chromium 131, headless, against `next start` on a tmp

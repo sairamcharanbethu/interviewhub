@@ -27,6 +27,10 @@ export async function POST(req: Request) {
     const body = await parseJsonBody(req, applicationSchema);
     const cand = get(`SELECT id FROM candidates WHERE id = ? AND deleted_at IS NULL`, body.candidate_id);
     if (!cand) throw notFound('Candidate not found');
+    // Reject a selected resume that does not exist or belongs to another
+    // candidate instead of storing a selection match/prep/Skill must refuse.
+    const { validateSelectedResume } = await import('@/lib/context');
+    validateSelectedResume(body.candidate_id, body.selected_resume_id ?? null);
     const id = newId('app_');
     const ts = now();
     run(

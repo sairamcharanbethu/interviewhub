@@ -3,7 +3,7 @@ import { useEffect, useState } from 'react';
 import Link from 'next/link';
 import { apiGet, apiPost } from '@/lib/api';
 import { useApp } from '@/components/context';
-import { Badge, Button, Card, EmptyState, ErrorBox, Spinner } from '@/components/ui';
+import { Badge, Button, Card, EmptyState, ErrorBox, Field, Input, Spinner } from '@/components/ui';
 import type { Application, SkillSync } from '@/lib/types';
 import { errMsg, fmtDateTime } from '@/lib/types';
 
@@ -34,14 +34,18 @@ export default function NativelyPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
+  const [budget, setBudget] = useState('');
+  const [budgetDefault, setBudgetDefault] = useState(12000);
 
   const load = async () => {
     setLoading(true); setError('');
     try {
-      const [a, f] = await Promise.all([
+      const [a, f, s] = await Promise.all([
         apiGet<{ applications: Application[] }>(`/api/applications?include_archived=true${candidateId ? `&candidate_id=${encodeURIComponent(candidateId)}` : ''}`),
         apiGet<{ skills: SkillFile[]; output_dir: string }>('/api/natively/status'),
+        apiGet<{ skill_context_chars: number; default: number }>('/api/natively/settings'),
       ]);
+      setBudget(String(s.skill_context_chars)); setBudgetDefault(s.default);
       setApps(a.applications); setFiles(f.skills); setOutputDir(f.output_dir || '');
       const map: Record<string, SyncRow[]> = {};
       const outdated: Record<string, boolean> = {};
@@ -62,6 +66,13 @@ export default function NativelyPage() {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error((data as { error?: string }).error || `Generate failed (${res.status})`);
       toast(`Skill written: ${(data as { skill_name: string }).skill_name}`); await load();
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setBusy(''); }
+  };
+  const saveBudget = async () => {
+    setBusy('budget');
+    try {
+      const r = await apiPost<{ skill_context_chars: number }>('/api/natively/settings', { skill_context_chars: Number(budget) });
+      setBudget(String(r.skill_context_chars)); toast(`Skill context budget set to ${r.skill_context_chars} characters`);
     } catch (e) { toast(errMsg(e), 'err'); } finally { setBusy(''); }
   };
   const confirm = async (appId: string, action: 'imported' | 'activated') => {
@@ -114,6 +125,15 @@ export default function NativelyPage() {
           <ul className="mt-2 space-y-1 text-sm">{failures.map(({ app, sync }) => <li key={sync.id}>{app.company} — {app.title}: {sync.error || sync.status}</li>)}</ul>
         </Card>
       ) : null}
+
+      <Card>
+        <h2 className="font-semibold">Skill context budget</h2>
+        <p className="mt-1 text-sm text-gray-600">Total characters of resume + JD excerpt included in a generated Skill (RAG picks the most relevant sections first; anything omitted is reported in the file). Default {budgetDefault}.</p>
+        <div className="mt-3 flex max-w-md items-end gap-2">
+          <Field label="Characters (1,000 – 200,000)"><Input type="number" min={1000} max={200000} step={1000} value={budget} onChange={(e) => setBudget(e.target.value)} /></Field>
+          <Button variant="secondary" onClick={saveBudget} disabled={busy === 'budget'}>{busy === 'budget' ? 'Saving…' : 'Save budget'}</Button>
+        </div>
+      </Card>
 
       <Card>
         <h2 className="font-semibold">Skill files on disk ({files.length})</h2>

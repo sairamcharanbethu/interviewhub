@@ -54,6 +54,24 @@ export function resolveResumeForApplication(
   return { resume: active ?? null, source: active ? 'active' : 'none' };
 }
 
+/**
+ * Validate a selected_resume_id BEFORE it is stored on an application
+ * (POST / PATCH). A resume that does not exist, or belongs to another
+ * candidate, is a 400 here — storing it would leave the application in a
+ * state every later operation (match / prep / Skill) must reject.
+ * null/undefined means "no explicit selection" and is always valid.
+ */
+export function validateSelectedResume(candidateId: string, resumeId: string | null | undefined): void {
+  if (resumeId === null || resumeId === undefined) return;
+  const resume = get<ResumeRow>(`SELECT * FROM resumes WHERE id = ?`, resumeId);
+  if (!resume) {
+    throw new ApiError(400, 'The selected resume does not exist — choose a resume version belonging to this candidate.');
+  }
+  if (resume.candidate_id !== candidateId) {
+    throw new ApiError(400, 'The selected resume belongs to a different candidate.');
+  }
+}
+
 /** Load an application row (not deleted) or throw 404. */
 export function loadApplicationOr404(applicationId: string): Record<string, unknown> {
   const app = get<Record<string, unknown>>(

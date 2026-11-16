@@ -329,3 +329,55 @@ Full account: `REMEDIATION_REPORT.md`.
   `foreign_key_check` empty → restart persistence → permanent delete
   removed 3 files). `npm audit` blocked by sandbox registry policy
   (see above).
+
+## Source-to-documentation reconciliation 2026-11-16 (this pass)
+
+Evidence-based re-check of the remediation claims against the actual
+source. Full trace: `SOURCE_CONSISTENCY.md`.
+
+### Claims verified as already fixed (no action taken)
+
+- `middleware.ts` imports `rateLimitIp`; `lib/security.ts:14` exports it
+  (plus a `rateLimit` alias at :44). `tsc` passes — no build blocker.
+- `resolveResumeForApplication` is used by match, prep questions/answers,
+  and Natively generation (via `loadApplicationContext`).
+- `lib/cleanup.ts` helpers are invoked by both permanent-delete endpoints
+  (candidate `route.ts:51-60`, application `route.ts:47-56`), with FTS
+  purge and `file_errors` reporting.
+- ai-settings POST encrypts the OpenRouter key before persisting
+  (`route.ts:62-86`); legacy plaintext re-encrypts on read
+  (`lib/ai/providers.ts:80-93`); stored value asserted `v1:`-prefixed in
+  `tests/api/ai-settings-security.test.ts`.
+- `validateUploadBytes` is called by resume upload, parse-resume, and JD
+  upload; Natively generation records `file_written`, uses the RAG +
+  `skill_context_chars` budget, labels omitted chars, escapes YAML.
+
+### Real defects fixed this pass
+
+- **R1 — parse-jd skipped upload validation:** `POST
+  /api/applications/parse-jd` never called `validateUploadBytes`. Now
+  validated like the other three upload endpoints.
+- **R2 — cleanup had no path guard:** `deleteFilesSafely` would delete any
+  absolute path; a tampered `stored_path`/`skill_path` DB value could
+  escape storage. New `isDeletablePath()` restricts deletes to
+  `dataDir()` / configured `skillsDir()`; refusals are reported.
+- **R3 — `selected_resume_id` unvalidated on write:** application POST /
+  PATCH stored any resume id. New `validateSelectedResume()` (existence +
+  candidate ownership, 400) is enforced on both.
+- **R4 — `npm run lint` was unconfigured:** `next lint` with no ESLint
+  config opened an interactive prompt. Installed `eslint@8.57.1` +
+  `eslint-config-next@14.2.18`, added `.eslintrc.json`; lint now runs
+  non-interactively with no warnings/errors.
+- **R5 — Skill context budget had no UI:** only `POST
+  /api/natively/settings` exposed it. Added a budget card on the
+  Natively page (GET/POST, 1,000–200,000, default shown).
+- **R6 — stale test counts:** README said 84 tests; now 189 tests / 29
+  files.
+
+### Verification this pass
+
+- `npx tsc --noEmit` clean; `npm run build` clean; `npm run lint` clean
+  (no warnings/errors); `npm test` **189/189 (29 files)**;
+  `npm run test:e2e` 1 passed (see final report).
+- Docker build NOT RUN (no Docker in sandbox). Live OpenRouter/Ollama
+  NOT RUN (no key/Ollama here — provider tests are mocked).

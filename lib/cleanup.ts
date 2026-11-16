@@ -10,10 +10,28 @@
 import fs from 'fs';
 import path from 'path';
 import { all, dataDir } from './db';
+import { skillsDir } from './files';
 
 export interface FileCleanupResult {
   removed: string[];
   errors: string[];
+}
+
+/**
+ * Storage roots cleanup may delete inside: the data directory (uploads,
+ * SQLite) and the configured skills directory (which may be an absolute
+ * path outside DATA_DIR, e.g. a Natively folder on macOS). Anything else
+ * is refused — a stored_path / skill_path from the DB must never be able
+ * to point cleanup at an arbitrary file (path.resolve() would otherwise
+ * honour an absolute stored value verbatim).
+ */
+export function isDeletablePath(p: string): boolean {
+  const resolved = path.resolve(p);
+  for (const root of [dataDir(), skillsDir()]) {
+    const r = path.resolve(root);
+    if (resolved === r || resolved.startsWith(r + path.sep)) return true;
+  }
+  return false;
 }
 
 /** Delete a list of absolute paths; collect failures instead of throwing. */
@@ -21,6 +39,10 @@ export function deleteFilesSafely(paths: string[]): FileCleanupResult {
   const removed: string[] = [];
   const errors: string[] = [];
   for (const p of paths) {
+    if (!isDeletablePath(p)) {
+      errors.push(`${p}: refused — outside configured storage directories`);
+      continue;
+    }
     try {
       if (fs.existsSync(p)) {
         fs.unlinkSync(p);
@@ -62,6 +84,11 @@ export function applicationSkillPaths(applicationId: string): string[] {
  * its DB rows are gone. Returns cleanup result; never throws.
  */
 export function removeCandidateUploadsDir(candidateId: string): FileCleanupResult {
+  // Candidate ids are server-generated, but never trust a path segment:
+  // a '..' in the id must not let the recursive delete escape uploads/.
+  if (!/^[A-Za-z0-9_-]+$/.test(candidateId)) {
+    return { removed: [], errors: [`uploads/${candidateId}: refused — invalid candidate id`] };
+  }
   const dir = path.join(dataDir(), 'uploads', candidateId);
   try {
     if (fs.existsSync(dir)) {

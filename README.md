@@ -44,7 +44,7 @@ See `.env.example` — it contains no real secrets.
 | --- | --- |
 | `npm run dev` | Next.js dev server |
 | `npm run build` / `npm start` | Production build / serve it |
-| `npm test` | Vitest unit + API integration tests (84 tests, temp DBs) |
+| `npm test` | Vitest unit + API integration tests (189 tests, 29 files, temp DBs) |
 | `npm run test:watch` | Vitest in watch mode |
 | `npm run test:e2e` | Playwright E2E (Chromium, headless) against the built app |
 | `npm run lint` | `next lint` |

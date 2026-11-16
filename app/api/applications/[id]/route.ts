@@ -20,6 +20,10 @@ export async function PATCH(req: Request, { params }: { params: { id: string } }
     const body = await parseJsonBody(req, applicationPatchSchema);
     const row = get<Row>(`SELECT * FROM applications WHERE id = ? AND deleted_at IS NULL`, params.id);
     if (!row) throw notFound('Application not found');
+    if ((body as Record<string, unknown>).selected_resume_id !== undefined) {
+      const { validateSelectedResume } = await import('@/lib/context');
+      validateSelectedResume(row.candidate_id as string, (body as Record<string, unknown>).selected_resume_id as string | null);
+    }
     const sets: string[] = []; const vals: unknown[] = [];
     for (const k of ['company','title','department','location','employment_type','job_url','application_date','status','interview_date','stage','jd_text','company_notes','notes','selected_resume_id'] as const) {
       if ((body as Record<string, unknown>)[k] !== undefined) { sets.push(`${k} = ?`); vals.push((body as Record<string, unknown>)[k] ?? null); }

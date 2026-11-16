@@ -2,6 +2,9 @@ node_modules
 .next
 out
 data/
+# InterviewHub encryption key file (<DATA_DIR>/.secret-key) — never commit,
+# even when DATA_DIR points outside ./data/.
+.secret-key
 .env
 .env.local
 .env*.local

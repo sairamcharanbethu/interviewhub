@@ -3,11 +3,17 @@ import { NextResponse } from 'next/server';
 import { get, run } from '@/lib/db';
 import { aiSettingsSchema } from '@/lib/validation';
 import { normalizeRoutingInput } from '@/lib/ai/routing';
-import { handleError, parseJsonBody } from '@/lib/errors';
+import { handleError, parseJsonBody, ApiError } from '@/lib/errors';
 import { maskKey } from '@/lib/security';
+import { getAiSettings, getSecretStorageInfo } from '@/lib/ai/providers';
+import { encryptSecret, keychainAvailable, keychainDelete, keychainSet } from '@/lib/secrets';
 
 function publicSettings(row: Record<string, unknown>) {
-  const { has_key, last4 } = maskKey(row.openrouter_key as string | null);
+  // Mask against the *effective* key (decrypted DB value / Keychain / env),
+  // never the raw stored column — the response carries only has_key + last4.
+  const effectiveKey = getAiSettings().openrouter_key;
+  const { has_key, last4 } = maskKey(effectiveKey);
+  const storageInfo = getSecretStorageInfo();
   // Normalise routing to the canonical {provider, model} form on read, so
   // legacy string-form rows (stored before the reconciliation) round-trip.
   let routing: Record<string, { provider: string; model: string }> | null = null;
@@ -25,6 +31,11 @@ function publicSettings(row: Record<string, unknown>) {
     redact_pii: row.redact_pii === 1,
     has_openrouter_key: has_key,
     openrouter_key_last4: last4,
+    // Which store the encryption key / OpenRouter key currently lives in
+    // ('env' = INTERVIEWHUB_SECRET, 'keychain' = macOS Keychain,
+    // 'file' = data/.secret-key). Shown on the Settings page.
+    secret_storage: storageInfo.storage,
+    secret_storage_has_key: storageInfo.has_key,
   };
 }
 
@@ -39,8 +50,38 @@ export async function POST(req: Request) {
   try {
     const body = await parseJsonBody(req, aiSettingsSchema);
     const cur = get<Record<string, unknown>>(`SELECT * FROM ai_settings WHERE id = 1`)!;
-    // Empty string for key clears it only if explicitly sent as ''? Treat '' as clear.
-    const key = body.openrouter_key !== undefined ? (body.openrouter_key || null) : (cur.openrouter_key as string | null);
+    // OpenRouter key handling:
+    // - non-empty string: store encrypted (AES-256-GCM, lib/secrets.ts), or
+    //   in the macOS Keychain when INTERVIEWHUB_USE_KEYCHAIN=1 and the
+    //   Keychain is available (default is the file-encrypted DB store; the
+    //   Keychain keeps the key out of the DB/backup entirely, but only works
+    //   on the Mac running the server). DB column is NULL in Keychain mode.
+    // - '' (explicitly sent): delete the stored key (DB + Keychain).
+    // - undefined: keep the current stored value.
+    let key: string | null;
+    if (body.openrouter_key !== undefined && body.openrouter_key !== null && body.openrouter_key !== '') {
+      const useKeychain = process.env.INTERVIEWHUB_USE_KEYCHAIN === '1' && keychainAvailable();
+      if (useKeychain) {
+        if (!keychainSet(body.openrouter_key)) {
+          throw new ApiError(500, 'Could not store the key in the macOS Keychain');
+        }
+        key = null;
+      } else {
+        // A DB-stored key supersedes any stale Keychain entry.
+        keychainDelete();
+        try {
+          key = encryptSecret(body.openrouter_key);
+        } catch (e) {
+          throw new ApiError(400, e instanceof Error ? e.message : 'Could not encrypt the API key');
+        }
+      }
+    } else if (body.openrouter_key === '' || body.openrouter_key === null) {
+      // '' (or explicit null, as before) deletes the stored key (DB + Keychain).
+      keychainDelete();
+      key = null;
+    } else {
+      key = cur.openrouter_key as string | null;
+    }
     run(
       `UPDATE ai_settings SET openrouter_key = ?, openrouter_model = ?, ollama_base_url = ?, ollama_model = ?, default_provider = ?, routing = ?, fallback_model = ?, redact_pii = ? WHERE id = 1`,
       key,

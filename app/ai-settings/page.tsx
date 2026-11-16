@@ -164,6 +164,12 @@ export default function AiSettingsPage() {
           <Field label="Fallback model" hint="Used when the primary model fails (optional)."><Input value={fallbackModel} onChange={(e) => setFallbackModel(e.target.value)} placeholder="e.g. llama3.1" /></Field>
         </div>
         <label className="mt-3 flex items-center gap-1.5 text-sm"><input type="checkbox" checked={clearKey} onChange={(e) => setClearKey(e.target.checked)} /> Clear the saved OpenRouter key on save</label>
+        {s.secret_storage && (
+          <p className="mt-3 text-xs text-gray-500">
+            Key storage: <span className="font-medium text-gray-700">{s.secret_storage === 'env' ? 'environment variable (INTERVIEWHUB_SECRET)' : s.secret_storage === 'keychain' ? 'macOS Keychain' : s.secret_storage === 'file' ? 'encrypted local file (data/.secret-key)' : 'none configured'}</span>
+            {s.secret_storage_has_key ? ' — a key is stored.' : ' — no key stored.'}
+          </p>
+        )}
         <div className="mt-4 flex flex-wrap gap-2">
           <Button onClick={save} disabled={saving}>{saving ? 'Saving…' : 'Save settings'}</Button>
           <Button variant="secondary" onClick={() => test('ollama')} disabled={!!testing}>{testing === 'ollama' ? 'Testing…' : 'Test Ollama connection'}</Button>

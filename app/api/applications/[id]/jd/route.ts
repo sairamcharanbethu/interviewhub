@@ -3,23 +3,11 @@ import { NextResponse } from 'next/server';
 import { get, run, now } from '@/lib/db';
 import { handleError, notFound, ApiError } from '@/lib/errors';
 import { parseJD } from '@/lib/parse/jd';
-import { stripHtml, cleanText } from '@/lib/parse/text';
+import { cleanText } from '@/lib/parse/text';
+import { fetchUrlText } from '@/lib/parse/fetch-url';
 import { extractTextByMime } from '@/lib/parse/resume';
+import { validateUploadBytes } from '@/lib/security';
 import { serializeApplication } from '@/lib/serialize';
-
-async function fetchUrlText(url: string): Promise<string> {
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 8000);
-  try {
-    const res = await fetch(url, { signal: ctrl.signal, headers: { 'User-Agent': 'InterviewHub/0.1' } });
-    if (!res.ok) throw new ApiError(502, `Job URL returned HTTP ${res.status}`);
-    const html = await res.text();
-    return stripHtml(html);
-  } catch (e) {
-    if (e instanceof ApiError) throw e;
-    throw new ApiError(502, 'Job URL could not be fetched (timeout or network error). Paste the JD text instead.');
-  } finally { clearTimeout(t); }
-}
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
@@ -35,7 +23,10 @@ export async function POST(req: Request, { params }: { params: { id: string } })
         const f = file as File;
         if (f.size === 0) throw new ApiError(400, 'Uploaded file is empty');
         if (f.size > 10 * 1024 * 1024) throw new ApiError(413, 'File exceeds 10MB limit');
-        jdText = await extractTextByMime(Buffer.from(await f.arrayBuffer()), f.type, f.name);
+        const jdBytes = Buffer.from(await f.arrayBuffer());
+        const valid = validateUploadBytes(f.name, jdBytes, f.type);
+        if (!valid.ok) throw new ApiError(400, valid.error);
+        jdText = await extractTextByMime(jdBytes, f.type, f.name);
       } else if (textField) jdText = String(textField);
       const urlField = form.get('job_url') || form.get('url');
       if (!jdText && urlField) jdText = await fetchUrlText(String(urlField));

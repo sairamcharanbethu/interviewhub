@@ -2,12 +2,24 @@ services:
   interviewhub:
     build: .
     ports:
+      # Host side binds to loopback only; the container itself listens on
+      # 0.0.0.0:3000 inside its own network (see Dockerfile CMD).
       - "127.0.0.1:3000:3000"
     volumes:
       - ./data:/app/data
     environment:
       - DATA_DIR=/app/data
-      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://localhost:11434}
+      - OLLAMA_BASE_URL=${OLLAMA_BASE_URL:-http://host.docker.internal:11434}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
-      - SKILLS_DIR=${SKILLS_DIR:-}
+      - SKILLS_DIR=${SKILLS_DIR:-/app/data/skills}
+    # On Linux, host.docker.internal does not resolve by default; this maps
+    # it to the host gateway so OLLAMA_BASE_URL above reaches a host Ollama.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
     restart: unless-stopped

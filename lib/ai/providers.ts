@@ -1,6 +1,7 @@
-import { get } from '../db';
+import { get, run } from '../db';
 import { recordUsage } from './usage';
 import { routeFor, type AiTask, type Route } from './routing';
+import { decryptSecret, encryptSecret, isEncrypted, keychainAvailable, keychainGet } from '../secrets';
 
 export interface ChatMessage { role: 'system' | 'user' | 'assistant'; content: string }
 export interface ChatResult { text: string; model: string; tokensIn: number; tokensOut: number }
@@ -73,8 +74,28 @@ async function fetchWithRetry(url: string, init: RequestInit, timeoutMs: number)
 
 export function getAiSettings(): AiSettings {
   const row = get<Record<string, unknown>>(`SELECT * FROM ai_settings WHERE id = 1`);
+  const stored = (row?.openrouter_key as string) || null;
+  let key: string | null = null;
+  if (stored) {
+    if (isEncrypted(stored)) {
+      // Encrypted at rest: decrypt (null on tamper/corrupt input — never throws).
+      key = decryptSecret(stored);
+    } else {
+      // Legacy plaintext: transparently re-encrypt in place, then use it.
+      // If encryption is unavailable (e.g. INTERVIEWHUB_SECRET too short),
+      // keep using the plaintext this once rather than breaking AI calls.
+      try {
+        run(`UPDATE ai_settings SET openrouter_key = ? WHERE id = 1`, encryptSecret(stored));
+      } catch {
+        /* migration deferred; plaintext still usable */
+      }
+      key = stored;
+    }
+  }
+  if (!key && keychainAvailable()) key = keychainGet();
+  if (!key) key = process.env.OPENROUTER_API_KEY || null;
   return {
-    openrouter_key: (row?.openrouter_key as string) || process.env.OPENROUTER_API_KEY || null,
+    openrouter_key: key,
     openrouter_model: (row?.openrouter_model as string) || 'deepseek/deepseek-v4.1-flash',
     ollama_base_url: (row?.ollama_base_url as string) || process.env.OLLAMA_BASE_URL || 'http://localhost:11434',
     ollama_model: (row?.ollama_model as string) || 'llama3.1',
@@ -82,6 +103,21 @@ export function getAiSettings(): AiSettings {
     fallback_model: (row?.fallback_model as string) || null,
     redact_pii: row?.redact_pii === 1 || row?.redact_pii === true,
   };
+}
+
+/**
+ * Which store currently holds the OpenRouter key, for the Settings page:
+ * `file` = AES-encrypted in the DB (key from env/file), `keychain` = macOS
+ * Keychain, `env` = OPENROUTER_API_KEY env var, `none` = no key anywhere.
+ * Never returns the key itself.
+ */
+export function getSecretStorageInfo(): { storage: 'env' | 'keychain' | 'file' | 'none'; has_key: boolean } {
+  const row = get<Record<string, unknown>>(`SELECT openrouter_key FROM ai_settings WHERE id = 1`);
+  const stored = (row?.openrouter_key as string) || null;
+  if (stored) return { storage: 'file', has_key: true };
+  if (keychainAvailable() && keychainGet()) return { storage: 'keychain', has_key: true };
+  if (process.env.OPENROUTER_API_KEY) return { storage: 'env', has_key: true };
+  return { storage: 'none', has_key: false };
 }
 
 /** True when the routed provider can actually be called (key present for OpenRouter). */
@@ -137,6 +173,36 @@ export async function chatForTask(task: AiTask, messages: ChatMessage[], timeout
   const route = routeFor(task);
   if (route.provider === 'openrouter') return openRouterChat(messages, route.model, task, timeoutMs);
   return ollamaChat(messages, route.model, task, timeoutMs);
+}
+
+/**
+ * Try the routed provider first; on ANY failure, try the other provider once
+ * with its configured default model. Usage is only recorded by the provider
+ * call that actually succeeds (openRouterChat/ollamaChat record after a
+ * successful response), so failed attempts never create ai_usage rows.
+ * When both fail, throws an Error with both failures attached as `.causes`.
+ */
+export async function chatForTaskWithFallback(task: AiTask, messages: ChatMessage[], timeoutMs = AI_TIMEOUT_MS): Promise<ChatResult> {
+  const route = routeFor(task);
+  const call = (provider: 'openrouter' | 'ollama', model?: string): Promise<ChatResult> =>
+    provider === 'openrouter'
+      ? openRouterChat(messages, model, task, timeoutMs)
+      : ollamaChat(messages, model, task, timeoutMs);
+  try {
+    return await call(route.provider, route.model);
+  } catch (primaryErr) {
+    const other: 'openrouter' | 'ollama' = route.provider === 'openrouter' ? 'ollama' : 'openrouter';
+    try {
+      return await call(other);
+    } catch (fallbackErr) {
+      const err = new Error(
+        `AI providers failed: primary (${route.provider}) ${primaryErr instanceof Error ? primaryErr.message : String(primaryErr)}; ` +
+        `fallback (${other}) ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`,
+      ) as Error & { causes: unknown[] };
+      err.causes = [primaryErr, fallbackErr];
+      throw err;
+    }
+  }
 }
 
 /** Legacy entry: routes to the configured default provider. Prefer chatForTask. */

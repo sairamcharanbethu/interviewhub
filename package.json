@@ -27,7 +27,8 @@
     "build": "next build",
     "dev": "next dev",
     "lint": "next lint",
-    "start": "next start",
+    "smoke:live-ai": "node scripts/smoke-live-ai.mjs --live",
+    "start": "next start -H 127.0.0.1",
     "test": "vitest run",
     "test:e2e": "playwright test",
     "test:watch": "vitest"

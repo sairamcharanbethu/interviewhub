@@ -13,7 +13,7 @@ marked **NOT INTEGRATED** and either wired in or struck from the docs.
 | `npx tsc --noEmit` | PASS, no errors |
 | `npm run build` | PASS |
 | `npm run lint` | PASS — `next lint`, no warnings/errors (ESLint 8 + `eslint-config-next`, `.eslintrc.json` added this pass; previously the script prompted interactively because no config existed) |
-| `npm test` (Vitest) | **189 passed, 0 failed, 29 files** |
+| `npm test` (Vitest) | **218 passed, 0 failed, 31 files** (updated by the automatic Natively install pass, 2026-11-16; was 189/29) |
 | `npm run test:e2e` (Playwright) | 1 passed (see Final verification) |
 | Docker build | NOT RUN — no Docker in this sandbox |
 | Live OpenRouter / Ollama | NOT RUN — no key / Ollama here; provider tests are mocked (see below) |
@@ -63,6 +63,7 @@ marked **NOT INTEGRATED** and either wired in or struck from the docs.
 | Permanent-delete file cleanup (uploads + Skills, FTS purge, partial-failure report) | `lib/cleanup.ts` (`candidateFilePaths`, `deleteCandidateFilesFromSnapshot`, `applicationSkillPaths`, `isDeletablePath`) | `DELETE /api/candidates/[id]?permanent=true`, `DELETE /api/applications/[id]?permanent=true` | `tests/api/cascade.test.ts` (DB counts), `tests/api/reconciliation.test.ts` (R2, filesystem assertions) |
 | Backup export/restore (secrets excluded) | `app/api/backup/export/route.ts` (strips `openrouter_key`), `app/api/backup/restore/route.ts` (restores non-secret columns only) | `POST /api/backup/export`, `POST /api/backup/restore` | `tests/api/backup.test.ts`, `tests/api/ai-settings-security.test.ts` (backup excludes key) |
 | Docker (ARM64, non-root, volumes, healthcheck, host Ollama) | `Dockerfile` (node:20-alpine, 3-stage, `USER app`, HEALTHCHECK), `docker-compose.yml` (127.0.0.1:3000) | — | **NOT RUN** — no Docker in this sandbox; `docker compose config` not attempted (binary absent) |
+| Automatic Natively Skill installation (`NATIVELY_SKILLS_DIR`, verified dir, `<slug>/SKILL.md`, statuses `installed`/`update_available`/`installation_failed`/`uninstalled`, uninstall, 100 KiB cap) | `lib/natively-install.ts` (`installSkill`, `uninstallSkill`, `validateInstallSlug`, `resolveInstallSlug`), `lib/files.ts` (`resolveNativelySkillsDir`, `macosDefaultNativelySkillsDir`), `db/migrations/003_natively_install.sql`, `NATIVELY_INSTALL_INVESTIGATION.md` (source evidence) | `GET /api/natively/install-config`, `POST /api/natively/install`, `POST /api/natively/uninstall`, `GET /api/natively/status` (install info) | `tests/unit/natively-install.test.ts` (15), `tests/api/natively-install.test.ts` (14) — temp dirs stand in for Natively's directory; live Natively verification **NOT RUN** (no Natively installed here) |
 | Health endpoint | `app/api/health/route.ts` | `GET /api/health` | smoke-tested via curl in earlier passes |
 
 ## Mocked vs live AI tests

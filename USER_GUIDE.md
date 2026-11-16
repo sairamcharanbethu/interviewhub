@@ -101,13 +101,29 @@ lists all generated skills with their lifecycle status.
 
 Statuses: `file_written` (file exists on disk — this is all generation
 proves), `awaiting_import`, `imported`, `activation_verified`, `outdated`
-(resume or JD changed since generation — regenerate), `failed`. Import the
-file in Natively yourself (open Natively → Skills → add the
-`interview-*.md` file → confirm → activate → test with a question), then
-click **Mark as imported** and **Mark activation verified** — those are the
-only way a Skill becomes "imported" or "activated" in InterviewHub. If two
-applications share a company and role, the second Skill gets a `-2` suffix
-instead of overwriting the first.
+(resume or JD changed since generation — regenerate), `failed`, plus
+`installed`, `update_available`, `installation_failed`, `uninstalled` for
+automatic installs. Import the file in Natively yourself (open Natively →
+Skills → add the `interview-*.md` file → confirm → activate → test with a
+question), then click **Mark as imported** and **Mark activation verified**
+— those are the only way a Skill becomes "imported" or "activated" in
+InterviewHub. If two applications share a company and role, the second
+Skill gets a `-2` suffix instead of overwriting the first.
+
+**Automatic install (optional):** on the application page or `/natively`,
+**Install to Natively** writes the Skill straight into Natively's Skills
+directory (`<dir>/<slug>/SKILL.md`). The Natively page shows the resolved
+directory and whether it was verified. On macOS the default is
+`~/Library/Application Support/Natively/skills/`; set `NATIVELY_SKILLS_DIR`
+in `.env` to override it (absolute path). If the directory cannot be
+verified — e.g. Natively is not installed yet — installation is blocked
+until you install Natively or confirm the directory in the app; the manual
+Download above always works instead. After installing, bring Natively to
+the front — it re-reads the Skills folder when its window regains focus,
+so no restart is needed. "Installed" means the file was written there, not
+that Natively loaded it; confirm import/activation in Natively as above.
+**Update in Natively** reinstalls after a resume or JD change;
+**Uninstall** removes only that application's Skill folder.
 
 ## 9. AI Settings
 

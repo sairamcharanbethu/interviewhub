@@ -26,7 +26,32 @@ const NATIVELY_STATUS_TONE: Record<string, 'green' | 'blue' | 'amber' | 'red' | 
   failed: 'red',
   generated: 'gray',
   not_generated: 'gray',
+  installed: 'green',
+  update_available: 'amber',
+  installation_failed: 'red',
+  uninstalled: 'gray',
 };
+
+interface InstallInfo {
+  status?: string | null;
+  slug?: string | null;
+  skill_path?: string | null;
+  install_method?: string | null;
+  installed_at?: string | null;
+  updated_at?: string | null;
+  install_error?: string | null;
+  slash_command?: string | null;
+  update_available?: boolean;
+}
+
+interface NativelyDirInfo {
+  configured: boolean;
+  resolved_path: string | null;
+  source: string;
+  verified: boolean;
+  natively_detected: boolean;
+  error: string | null;
+}
 
 const NATIVELY_IMPORT_STEPS = [
   'Open Natively.',
@@ -51,6 +76,10 @@ export default function ApplicationDetail() {
   const [syncs, setSyncs] = useState<SyncRow[]>([]);
   const [natOutdated, setNatOutdated] = useState(false);
   const [natOutputDir, setNatOutputDir] = useState('');
+  const [natInstall, setNatInstall] = useState<InstallInfo | null>(null);
+  const [natDir, setNatDir] = useState<NativelyDirInfo | null>(null);
+  const [dirConfirm, setDirConfirm] = useState<{ resolved_path: string; message: string } | null>(null);
+  const [dirConfirmed, setDirConfirmed] = useState(false);
   const [preview, setPreview] = useState<{ skill_name: string; content: string; truncated: boolean; omitted_chars: number } | null>(null);
   const [versions, setVersions] = useState<Array<{ version_number: number; created_at: string; content_chars: number }>>([]);
   const [versionsOpen, setVersionsOpen] = useState(false);
@@ -90,10 +119,11 @@ export default function ApplicationDetail() {
         apiGet<{ candidate: Candidate }>(`/api/candidates/${a.application.candidate_id}`),
         apiGet<{ resumes: Resume[] }>(`/api/candidates/${a.application.candidate_id}/resumes`),
         apiGet<{ interview_sessions: InterviewSession[] }>(`/api/interview-sessions?application_id=${encodeURIComponent(id)}`),
-        apiGet<{ syncs: SyncRow[]; outdated: boolean; output_dir: string }>(`/api/natively/status?application_id=${encodeURIComponent(id)}`),
+        apiGet<{ syncs: SyncRow[]; outdated: boolean; output_dir: string; install?: InstallInfo | null; natively_dir?: NativelyDirInfo }>(`/api/natively/status?application_id=${encodeURIComponent(id)}`),
       ]);
       setCandidate(c.candidate); setResumes(rs.resumes); setSessions(ss.interview_sessions); setSyncs(sy.syncs);
       setNatOutdated(Boolean(sy.outdated)); setNatOutputDir(sy.output_dir || '');
+      setNatInstall(sy.install || null); setNatDir(sy.natively_dir || null);
       const all = await apiGet<{ candidates: Candidate[] }>('/api/candidates');
       setCandidates(all.candidates);
     } catch (e) { setError(errMsg(e)); } finally { setLoading(false); }
@@ -191,6 +221,37 @@ export default function ApplicationDetail() {
     if (!p) return;
     try { await navigator.clipboard.writeText(p); toast('File path copied'); }
     catch { toast(p, 'err'); }
+  };
+  const nativelyInstall = async (confirmOverwrite = false, confirmDirectory = false) => {
+    setNatBusy('install');
+    try {
+      const res = await fetch('/api/natively/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ application_id: id, confirm_overwrite: confirmOverwrite, confirm_directory: confirmDirectory }) });
+      const data = await res.json().catch(() => ({})) as Record<string, unknown>;
+      if (!res.ok) {
+        if (res.status === 409 && data.needs_directory_confirmation) {
+          setDirConfirm({ resolved_path: String(data.resolved_path || ''), message: String(data.error || 'Directory could not be verified.') });
+          return;
+        }
+        if (res.status === 409 && data.needs_confirmation) {
+          if (window.confirm(`A Skill folder '${String(data.slug || '')}' already exists in Natively's Skills directory and is not registered to this application. Install anyway? The existing folder will be moved aside as a backup, not deleted.`)) {
+            await nativelyInstall(true, confirmDirectory);
+          }
+          return;
+        }
+        throw new Error(String(data.error || `Install failed (${res.status})`));
+      }
+      toast(`Installed to Natively: ${String(data.slash_command || '')} — bring Natively to the front so it re-reads its Skills folder.`);
+      setDirConfirm(null); setDirConfirmed(false); await load();
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setNatBusy(''); }
+  };
+  const nativelyUninstall = async () => {
+    if (!window.confirm('Uninstall this Skill from Natively? Only this application\'s installed Skill folder is removed; unrelated Natively Skills and the manual-export file are untouched.')) return;
+    setNatBusy('uninstall');
+    try {
+      const r = await apiPost<{ status: string; already_gone?: boolean }>('/api/natively/uninstall', { application_id: id });
+      toast(r.already_gone ? 'Skill folder was already gone — marked uninstalled' : 'Skill uninstalled from Natively');
+      await load();
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setNatBusy(''); }
   };
   const nativelyDelete = async () => {
     if (!window.confirm('Delete the generated Skill file and its version history? The application, candidate, and resumes are untouched.')) return;
@@ -411,17 +472,32 @@ export default function ApplicationDetail() {
             <p><span className="text-gray-500">Last generated:</span> {fmtDateTime(syncs[0].last_synced)}</p>
             <p><span className="text-gray-500">Resume version:</span> {syncs[0].resume_version ?? '—'} · <span className="text-gray-500">JD version:</span> {syncs[0].jd_hash ? syncs[0].jd_hash.slice(0, 12) : '—'}</p>
             {syncs[0].error ? <p className="text-red-700">Error: {syncs[0].error}</p> : null}
+            {natInstall?.status === 'installed' || natInstall?.status === 'update_available' ? (
+              <>
+                <p><span className="text-gray-500">Installed in Natively:</span> <code className="rounded bg-gray-100 px-1">{natInstall.slash_command || ''}</code> · {natInstall.skill_path || '—'}</p>
+                <p><span className="text-gray-500">Installed:</span> {fmtDateTime(natInstall.installed_at)}{natInstall.update_available ? ' · ' : ''}{natInstall.update_available ? <Badge tone="amber">Update available — resume or JD changed</Badge> : null}</p>
+              </>
+            ) : null}
+            {natInstall?.status === 'installation_failed' ? <p className="text-red-700">Installation failed: {natInstall.install_error || 'see details'}</p> : null}
           </div>
         ) : (
           <p className="mt-2 text-sm text-gray-500">Not generated yet. The Skill uses the application&apos;s selected resume ({app.selected_resume_id ? `v${resumes.find((r) => r.id === app.selected_resume_id)?.version ?? '?'}` : 'active version'}) and the stored JD.</p>
         )}
+        <p className="mt-2 text-xs text-gray-500">
+          Natively Skills directory: {natDir?.resolved_path ? <code className="rounded bg-gray-100 px-1">{natDir.resolved_path}</code> : 'not configured'}
+          {natDir ? (natDir.verified ? ' · verified' : natDir.natively_detected ? ' · Natively detected, directory not verified yet' : ' · not verified — set NATIVELY_SKILLS_DIR or install Natively') : ''}
+        </p>
         <div className="mt-3 flex flex-wrap gap-2">
           <Button onClick={nativelyPreview} disabled={natBusy === 'preview' || !app.jd_text}>{natBusy === 'preview' ? 'Loading…' : 'Preview'}</Button>
           <Button onClick={() => nativelyGenerate(false)} disabled={natBusy === 'gen' || !app.jd_text}>{natBusy === 'gen' ? 'Generating…' : syncs.length ? 'Regenerate' : 'Generate Natively Skill'}</Button>
           <Button variant="secondary" onClick={nativelyDownload} disabled={natBusy === 'dl' || !syncs.length}>{natBusy === 'dl' ? 'Downloading…' : 'Download'}</Button>
           <Button variant="secondary" onClick={nativelyCopyPath} disabled={!syncs.length}>Copy file path</Button>
           <Button variant="secondary" onClick={nativelyLoadVersions} disabled={!syncs.length}>Version history</Button>
+          <Button onClick={() => nativelyInstall(false, false)} disabled={natBusy === 'install' || !app.jd_text || !natDir?.resolved_path}>{natBusy === 'install' ? 'Installing…' : natInstall?.status === 'installed' ? 'Update in Natively' : 'Install to Natively'}</Button>
+          <Button variant="danger" onClick={nativelyUninstall} disabled={natBusy === 'uninstall' || natInstall?.status !== 'installed'}>Uninstall from Natively</Button>
         </div>
+        {!natDir?.resolved_path ? <p className="mt-2 text-xs text-amber-700">Automatic install is unavailable until a Natively Skills directory is configured (set NATIVELY_SKILLS_DIR, or install Natively on macOS). Manual download above still works.</p> : null}
+        {natInstall?.status === 'installed' ? <p className="mt-2 text-xs text-gray-600">Installed means the file was written to Natively&apos;s Skills directory — not that Natively loaded it. Bring Natively to the front; it re-reads the Skills folder when its window regains focus.</p> : null}
         {syncs.length ? (
           <div className="mt-3 flex flex-wrap gap-2">
             <Button variant="secondary" onClick={() => nativelyConfirm('imported')} disabled={natBusy.startsWith('confirm') || syncs[0].status === 'imported' || syncs[0].status === 'activation_verified'}>Mark as imported</Button>
@@ -438,6 +514,20 @@ export default function ApplicationDetail() {
           <p className="mt-2 text-xs text-amber-700">A generated file is NOT proof Natively loaded it. Import and activation are confirmed only when you click “Mark as imported” / “Mark activation verified” above after doing the steps in Natively. This Skill works without Natively Pro&apos;s Reference Files feature.</p>
         </div>
       </Card>
+
+      <Modal open={!!dirConfirm} onClose={() => { setDirConfirm(null); setDirConfirmed(false); }} title="Confirm Natively Skills directory">
+        <p className="text-sm text-gray-700">{dirConfirm?.message}</p>
+        <p className="mt-2 break-all font-mono text-xs">{dirConfirm?.resolved_path}</p>
+        <p className="mt-2 text-sm text-gray-600">Only confirm if you are sure this is Natively&apos;s Skills folder (macOS default: ~/Library/Application Support/Natively/skills). InterviewHub will create the folder if needed and install only this application&apos;s Skill folder inside it.</p>
+        <label className="mt-3 flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={dirConfirmed} onChange={(e) => setDirConfirmed(e.target.checked)} />
+          I confirm this is Natively&apos;s Skills directory
+        </label>
+        <div className="mt-4 flex gap-2">
+          <Button onClick={() => nativelyInstall(false, true)} disabled={!dirConfirmed || natBusy === 'install'}>Install to this directory</Button>
+          <Button variant="secondary" onClick={() => { setDirConfirm(null); setDirConfirmed(false); }}>Cancel</Button>
+        </div>
+      </Modal>
 
       <Modal open={!!preview} onClose={() => setPreview(null)} title={preview ? `Preview — ${preview.skill_name}.md` : ''} wide>
         {preview ? (

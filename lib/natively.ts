@@ -10,11 +10,18 @@
 //
 // Lifecycle statuses (skills_sync.status):
 //   not_generated | generated | file_written | awaiting_import | imported |
-//   activation_verified | outdated | failed
+//   activation_verified | outdated | failed |
+//   installed | update_available | installation_failed | uninstalled
 // 'generated' is the transient pre-write state; a successfully written file
 // is 'file_written'. 'awaiting_import' is set when the user opens the
 // import instructions. 'imported' / 'activation_verified' are ONLY set by
 // explicit user confirmation (POST /api/natively/confirm).
+// 'installed' means ONLY that the SKILL.md file was written into the
+// verified Natively Skills directory — never that Natively loaded or
+// activated it (there is no verifiable mechanism for that).
+// 'update_available' is advisory: the stored content hash differs from a
+// freshly generated Skill. 'installation_failed' records a failed install
+// attempt; 'uninstalled' records a managed uninstall.
 
 import crypto from 'crypto';
 import fs from 'fs';
@@ -37,6 +44,10 @@ export const SKILL_STATUSES = [
   'activation_verified',
   'outdated',
   'failed',
+  'installed',
+  'update_available',
+  'installation_failed',
+  'uninstalled',
 ] as const;
 export type SkillStatus = (typeof SKILL_STATUSES)[number];
 

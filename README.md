@@ -44,7 +44,7 @@ See `.env.example` — it contains no real secrets.
 | --- | --- |
 | `npm run dev` | Next.js dev server |
 | `npm run build` / `npm start` | Production build / serve it |
-| `npm test` | Vitest unit + API integration tests (189 tests, 29 files, temp DBs) |
+| `npm test` | Vitest unit + API integration tests (218 tests, 31 files, temp DBs) |
 | `npm run test:watch` | Vitest in watch mode |
 | `npm run test:e2e` | Playwright E2E (Chromium, headless) against the built app |
 | `npm run lint` | `next lint` |
@@ -158,6 +158,32 @@ never a silent overwrite. Skill context is RAG-selected excerpts within a
 configurable budget (default 12,000 chars, `POST /api/natively/settings`);
 when excerpts are used the file says so and reports the omitted character
 count — it never claims completeness it doesn't have.
+
+### Automatic install to Natively (optional, filesystem-based)
+
+**Install to Natively** (same cards) writes the Skill directly into
+Natively's local Skills directory as `<dir>/<slug>/SKILL.md` — no
+drag-and-drop. This is a filesystem install into the directory Natively
+itself uses (verified from Natively's public source; see
+`NATIVELY_INSTALL_INVESTIGATION.md`): on macOS the default is
+`~/Library/Application Support/Natively/skills/`. Configure it with
+`NATIVELY_SKILLS_DIR` (absolute path); leave it unset on macOS to use the
+default. The app shows the resolved directory and whether it could be
+verified, and **blocks installation when it cannot be verified** — install
+Natively first, or set the variable and confirm the directory in the UI.
+Manual export above always keeps working as a fallback.
+
+`installed` means only that the file was written to the verified
+directory — never that Natively loaded or activated it. After installing,
+bring Natively to the front: it re-reads the Skills folder when its window
+regains focus (per Natively's own source; no restart required). The Skill
+appears as the slash command `/<slug>` (folder-derived — verify in
+Natively). **Update in Natively** reinstalls after a resume/JD change
+(`update_available` is shown when the stored content differs);
+**Uninstall** removes only that application's registered folder, and
+refuses if its contents changed outside InterviewHub. Unrelated Natively
+Skills are never touched; a foreign folder with the same slug is moved
+aside as a backup, never deleted. Per-file cap is Natively's 100 KiB.
 
 ## Backup
 

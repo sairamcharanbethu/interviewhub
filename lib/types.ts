@@ -61,7 +61,7 @@ export interface AiSettings {
   secret_storage?: 'env' | 'keychain' | 'file' | 'none' | null; secret_storage_has_key?: boolean;
 }
 export interface AiUsageRow { id: string; provider?: string | null; model?: string | null; task?: string | null; tokens_in?: number | null; tokens_out?: number | null; cost_usd?: number | null; created_at: string }
-export interface SkillSync { id: string; application_id: string; skill_name: string; skill_path?: string | null; status?: string | null; last_synced?: string | null; error?: string | null; resume_version?: number | null; jd_hash?: string | null; content_hash?: string | null; version_number?: number | null }
+export interface SkillSync { id: string; application_id: string; skill_name: string; skill_path?: string | null; status?: string | null; last_synced?: string | null; error?: string | null; resume_version?: number | null; jd_hash?: string | null; content_hash?: string | null; version_number?: number | null; candidate_id?: string | null; install_slug?: string | null; install_method?: string | null; install_path?: string | null; installed_at?: string | null; updated_at?: string | null; install_error?: string | null }
 export interface HealthData { status: string; db: string; ollama_reachable: boolean; openrouter_configured: boolean; timestamp: string }
 
 export function errMsg(e: unknown): string {

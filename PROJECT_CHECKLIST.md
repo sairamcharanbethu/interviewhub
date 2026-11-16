@@ -381,3 +381,41 @@ source. Full trace: `SOURCE_CONSISTENCY.md`.
   `npm run test:e2e` 1 passed (see final report).
 - Docker build NOT RUN (no Docker in sandbox). Live OpenRouter/Ollama
   NOT RUN (no key/Ollama here — provider tests are mocked).
+
+## Automatic Natively Skill installation (2026-11-16)
+
+Filesystem install into Natively's verified local Skills directory —
+investigation evidence in `NATIVELY_INSTALL_INVESTIGATION.md` (Natively
+source refs: SkillsManager.ts:608, SkillValidator.ts:174-185,
+SkillsSettings.tsx:127-129, SkillInstaller.ts). New env
+`NATIVELY_SKILLS_DIR` (macOS default `~/Library/Application
+Support/Natively/skills/`); never silently falls back to `data/skills/`.
+New `lib/natively-install.ts` (stage tmp file in the destination folder,
+fsync, atomic rename; realpath containment; symlink-escape refusal;
+100 KiB cap; duplicate-slug `-2` suffix; foreign folders moved aside as
+backups, never deleted; uninstall only the registered folder and only
+when its hash still matches what InterviewHub wrote). New statuses
+`installed` / `update_available` / `installation_failed` / `uninstalled`
+(migration `003_natively_install.sql`); `installed` means only "file
+written to the verified directory", never loaded/activated. New routes
+`GET /api/natively/install-config`, `POST /api/natively/install`,
+`POST /api/natively/uninstall`; status responses extended with install
+info. Manual export unchanged as fallback.
+
+### Verification this pass
+
+- `npx tsc --noEmit` clean; `npm run build` clean; `npm run lint` clean
+  (no warnings/errors); `npm test` **218/218 (31 files)** — new
+  `tests/unit/natively-install.test.ts` (15) and
+  `tests/api/natively-install.test.ts` (14) cover path resolution,
+  slug validation, install/update, duplicate slugs, foreign-folder
+  confirmation + backup, symlink escape, unconfigured blocking,
+  100 KiB limit, uninstall restrictions, and manual-export fallback;
+  `npm run test:e2e` 1 passed.
+- Docker build NOT RUN (no Docker in sandbox). Live Natively
+  verification NOT RUN (no Natively installed here — install flow is
+  verified against temp dirs + Natively's source; needs one manual
+  confirmation on the user's Mac: install a Skill, bring Natively to
+  the front, confirm it appears in the Skills list). Live
+  OpenRouter/Ollama NOT RUN (no key/Ollama here — provider tests are
+  mocked).

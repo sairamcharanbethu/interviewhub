@@ -211,6 +211,24 @@ cascade test seeded a Skill without a JD, which the new spec-correct
 generator refuses (JD is required — spec §4 step 4); the test now seeds
 a JD before generating.
 
+## Follow-up fix (same day, after the first push)
+
+The security track's completion report flagged two gaps that were fixed,
+verified, and pushed after the four commits above:
+
+- **`lib/api.ts` did not send the CSRF header.** With `APP_PASSWORD`
+  set, every mutating UI call would have 403'd on CSRF. The fetch
+  wrapper now reads the JS-readable `ih_csrf` cookie and echoes it as
+  `x-ih-csrf` on mutating calls (absent without auth, so no behaviour
+  change when auth is off). Verified live against the production build
+  with `APP_PASSWORD` set: no session → 401; session without the header
+  → 403; session + header (the `lib/api.ts` flow) → 201.
+- **`app/api/candidates/parse-resume/route.ts` skipped magic-byte
+  validation** (extension check only). It now calls
+  `validateUploadBytes` before extraction; a `.txt` renamed to `.docx`
+  returns 400. Regression test added
+  (`tests/api/auto-import.test.ts`, now 11 tests).
+
 ## Remaining limitations (honest)
 
 - **Docker build untested** — no Docker in this sandbox. Verify

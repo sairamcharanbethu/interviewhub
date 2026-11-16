@@ -1,7 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { handleError, ApiError } from '@/lib/errors';
-import { allowedUpload } from '@/lib/security';
+import { allowedUpload, validateUploadBytes } from '@/lib/security';
 import { extractTextByMime, parseResume } from '@/lib/parse/resume';
 import { cleanText } from '@/lib/parse/text';
 
@@ -24,6 +24,10 @@ export async function POST(req: Request) {
     if (f.size > MAX_BYTES) throw new ApiError(413, 'File exceeds 10MB limit');
     if (!allowedUpload(f.name, f.type)) throw new ApiError(400, 'Only pdf, docx, txt, md files are allowed');
     const bytes = Buffer.from(await f.arrayBuffer());
+    // Magic-byte validation (same as the resume upload route): a renamed
+    // .txt must not pass as a .docx, etc.
+    const valid = validateUploadBytes(f.name, bytes, f.type);
+    if (!valid.ok) throw new ApiError(400, valid.error);
     const extractedText = await extractTextByMime(bytes, f.type, f.name);
     if (!cleanText(extractedText)) throw new ApiError(400, 'No readable text could be extracted from this file — it may be a scanned image or an empty document.');
     const parsed = parseResume(extractedText);

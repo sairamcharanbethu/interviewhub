@@ -43,6 +43,11 @@ describe('resume-first parse (no creation)', () => {
     expect(res.status).toBe(400);
   });
 
+  it('rejects a .txt renamed to .docx (magic-byte mismatch) with 400', async () => {
+    const res = await parseResume(fileReq('http://localhost/api/candidates/parse-resume', new File(['plain text, not a zip'], 'fake.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' })));
+    expect(res.status).toBe(400);
+  });
+
   it('rejects a non-multipart request with 400', async () => {
     const res = await parseResume(new Request('http://localhost/api/candidates/parse-resume', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' }));
     expect(res.status).toBe(400);

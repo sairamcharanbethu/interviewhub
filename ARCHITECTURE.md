@@ -115,14 +115,35 @@ Uploads (`multipart/form-data`) go through `lib/security.ts`
 - `lib/prep.ts` `generateQuestions` / `draftAnswer` — template question bank
   filled with JD keywords and resume evidence.
 
-## Natively skills
+## Natively skills (file-based export/import — no Natively API)
 
-`lib/natively.ts` builds a `SKILL.md` (frontmatter `name`/`description`,
-factual-accuracy rules, candidate summary, resume/JD excerpts, STAR stories)
-and writes it atomically to `skillsDir()` as
-`interview-<candidate>-<company>-<role>.md`. `POST /api/natively/generate`
-records the sync in `skills_sync`. Only `interview-*` names may be written
-(`writeSkillFile` enforces the prefix; `guardPath` blocks traversal).
+`lib/natively.ts` builds a standalone `interview-<candidate>-<company>-<role>.md`
+(frontmatter `name`/`description` with YAML-escaped values, factual-accuracy
+rules, candidate facts kept separate from employer requirements, resume/JD
+excerpts, STAR stories) and writes it atomically to `skillsDir()`.
+
+- **Resume resolution:** `lib/context.ts` `resolveResumeForApplication()`
+  is the single resolver used by Skill generation, Match, and Prep:
+  application `selected_resume_id` wins (validated to belong to the
+  candidate, 400 if missing/cross-candidate), active resume is the fallback.
+  RAG retrieval takes the same `resumeId`, so chunks never mix versions.
+- **Context budget:** excerpts are RAG-selected (JD requirements drive chunk
+  choice) within `skill_context_chars` (default 12,000, `POST
+  /api/natively/settings`). Truncation is never silent: the file states the
+  omitted character count and that the full documents remain in InterviewHub.
+- **Lifecycle (`skills_sync`):** `not_generated → generated → file_written →
+  awaiting_import → imported → activation_verified`, plus `outdated`
+  (resume version or JD hash changed since generation) and `failed`.
+  Generation records `file_written` only; `imported` /
+  `activation_verified` are set exclusively by the user's manual
+  confirmation (`POST /api/natively/confirm`). Previous content is kept in
+  `skill_versions` on every regenerate (restore via
+  `POST /api/natively/versions`).
+- **Collisions:** `resolveSkillName()` adds a stable `-2`/`-3` suffix when
+  another application already owns the base name; regenerating the same
+  application's Skill requires `confirm_overwrite: true` (409 otherwise).
+  Only `interview-*` names may be written (`writeSkillFile` enforces the
+  prefix; `guardPath` blocks traversal).
 
 ## State and config
 

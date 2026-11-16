@@ -30,7 +30,10 @@ Health: `GET /api/health`. Data lives in `./data/interviewhub.db`
 | `DATA_DIR` | `./data` | SQLite file, uploads, skills live here |
 | `SKILLS_DIR` | `<DATA_DIR>/skills` | Where generated `interview-*.md` skills are written |
 | `OLLAMA_BASE_URL` | `http://localhost:11434` | Local Ollama endpoint (also settable in AI Settings) |
-| `OPENROUTER_API_KEY` | — | Cloud provider key; prefer setting it in the AI Settings UI (stored in the DB, never in `.env` if you can avoid it) |
+| `OPENROUTER_API_KEY` | — | Cloud provider key; prefer setting it in the AI Settings UI (stored encrypted in the DB, never in `.env` if you can avoid it) |
+| `INTERVIEWHUB_SECRET` | — | Encryption key for the stored OpenRouter key (AES-256-GCM). If unset, a key file is generated at `<DATA_DIR>/.secret-key` (0600, gitignored). |
+| `APP_PASSWORD` | — | Optional single-user password. When set, login is required for all pages/APIs; when unset, remote (non-localhost) requests are refused with 403. |
+| `TRUST_PROXY` | `0` | Set to `1` only behind a trusted reverse proxy — then `X-Forwarded-For` is honoured for rate limiting. |
 | `PORT` | `3000` | `next start -p <port>` |
 
 See `.env.example` — it contains no real secrets.
@@ -81,13 +84,21 @@ lib/
   parse/              Resume / JD / PDF / DOCX / text parsers
   ai/                 providers (Ollama/OpenRouter), routing, prompts
                       (anti-injection), JSON parsing, usage logging
-  natively.ts         SKILL.md builder + skill file writer
+  natively.ts         SKILL.md builder + skill file writer + lifecycle
+  context.ts          Shared resume resolver (selected > active) for
+                      Match / Prep / Skill generation — one path, no drift
+  cleanup.ts          Permanent-delete file cleanup (uploads + Skill files)
   files.ts            Upload storage, skills dir
   serialize.ts        DB row -> API shape (JSON columns parsed)
+  secrets.ts          AES-256-GCM key encryption (+ macOS Keychain when set)
+  auth.ts             Optional APP_PASSWORD login, sessions, CSRF, login limits
 db/migrations/001_init.sql   Schema (candidates, resumes, applications,
                                  star_stories, interview_sessions,
                                  ai_settings, ai_usage, skills_sync,
                                  document_chunks + FTS5)
+db/migrations/002_remediation.sql  skills_sync lifecycle columns
+                                 (resume_version, jd_hash, content_hash),
+                                 skill_versions history, skill_context_chars
 tests/
   unit/               match, JD/resume parsers, injection guard, RAG
                       isolation, validation, security, prep templates
@@ -126,6 +137,28 @@ read and re-saved in canonical form. The model fields are dropdowns populated
 from `GET /api/ai-settings/models?provider=…`; if a provider is unreachable
 the field stays a free-text input.
 
+## Natively Skill lifecycle (file-based only)
+
+There is no Natively API and no automatic activation. **Generate Natively
+Skill** (application page, or `/natively`) writes one standalone
+`interview-{candidate}-{company}-{role}.md` file into `SKILLS_DIR` (default
+`./data/skills/`) using the application's **selected resume** (or the active
+resume when nothing is selected) and the stored JD, then records status
+`file_written`. **Preview** shows the exact content first; **Download**,
+**Copy file path**, and **Version history** (restore any previous version)
+are on the same card. If the resume or JD changes afterwards, the Skill is
+flagged **outdated** until regenerated.
+
+Import and activation are manual and user-confirmed only: follow the 7
+steps shown in the app (Natively → Skills → add the `interview-*.md` file
+→ confirm → activate → test), then click **Mark as imported** and **Mark
+activation verified**. A generated file is never proof Natively loaded it.
+Two applications with the same company+role get a stable `-2` suffix —
+never a silent overwrite. Skill context is RAG-selected excerpts within a
+configurable budget (default 12,000 chars, `POST /api/natively/settings`);
+when excerpts are used the file says so and reports the omitted character
+count — it never claims completeness it doesn't have.
+
 ## Backup
 
 `POST /api/backup/export` downloads a JSON snapshot of all tables; the
@@ -137,8 +170,10 @@ hand-crafted backup contains one), and rebuilds full-text search. Details:
 
 ## Known limitations
 
-- **Local-only, single-user.** No authentication; bind to localhost (or put
-  it behind your own auth/reverse proxy) before exposing it. See `SECURITY.md`.
+- **Local-only, single-user by default.** `npm start` binds `127.0.0.1`
+  and remote requests are refused unless `APP_PASSWORD` is set (then login
+  is required for all pages/APIs). Never deploy publicly without it.
+  See `SECURITY.md`.
 - **Ollama counts as "configured"** whenever a base URL is set, so AI calls
   are attempted and fall back on failure — reachability is only proven by a
   call. If Ollama isn't running, match/prep/STAR endpoints answer with the
@@ -158,10 +193,11 @@ hand-crafted backup contains one), and rebuilds full-text search. Details:
   JavaScript-rendered / blocked — paste the text instead) and never saves
   an empty JD. LinkedIn blocks server fetches, so pasting the job
   description is the fallback there.
-- **Permanent candidate/application deletes remove DB rows (with FTS
-  cleanup) but uploaded files under `data/uploads/` are only removed for
-  resume deletes;** a permanently deleted candidate's upload files can
-  remain on disk. See `TROUBLESHOOTING.md`.
+- **Permanent deletes also remove files.** A permanent candidate delete
+  removes its resume uploads, generated Skill files, chunks and FTS rows
+  (partial file failures are reported in the response as `file_errors`).
+  A permanent application delete removes only that application's Skill
+  files; candidate resumes and other applications are untouched.
 - **Live AI calls are not covered by automated tests** (no network/provider
   in CI here): offline fallbacks are tested; OpenRouter/Ollama calls are
   manual-only. See `PROJECT_CHECKLIST.md`.

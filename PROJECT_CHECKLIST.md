@@ -207,11 +207,17 @@ verified empty afterwards (0 records in every table, empty `uploads/`).
   `docker compose up --build` is untested here; the Dockerfile is a
   standard 3-stage Node 20 build. Verify on a machine with Docker before
   relying on it.
-- **PDF/DOCX parsing paths in the API tests** — only `.txt` uploads are
-  exercised end-to-end (the parsers for PDF/DOCX are library code, not
-  route-tested). A real PDF upload check is worth doing manually.
-- **Multi-user / concurrent use** — single-user local tool; no concurrency
-  or auth testing exists by design.
+- **PDF/DOCX parsing paths in the API tests** — PDF uploads are now
+  route-tested (`tests/unit/pdf-ocr.test.ts`: text PDF stored normally,
+  scanned/image-only PDF stored as `needs_review` with a warning, corrupt
+  PDF rejected 400 with no resume row and no file). DOCX magic-byte
+  validation is unit-tested (`tests/unit/upload-validation.test.ts`) but
+  DOCX *extraction* is still not route-tested — worth a manual check with
+  a real .docx.
+- **Multi-user / concurrent use** — single-user local tool; optional
+  password auth (`APP_PASSWORD`, see `SECURITY.md`) is now implemented
+  and tested (`tests/api/auth.test.ts`), but there is no concurrency
+  testing by design.
 - **Browser matrix** — Playwright ran Chromium only. Firefox/WebKit not
   installed or attempted.
 
@@ -241,16 +247,85 @@ verified empty afterwards (0 records in every table, empty `uploads/`).
 ## Remaining work / known limitations
 
 - Live-provider verification (OpenRouter/Ollama) — manual, see above.
-- Docker build verification — needs a Docker host.
-- PDF/DOCX upload check against real files.
-- Permanent candidate delete leaves the candidate's uploaded files on disk
-  (`data/uploads/<candidateId>/`) — manual cleanup; only resume deletes
-  remove the stored file. Documented in `TROUBLESHOOTING.md`.
+  A live smoke script exists (`npm run smoke:live-ai`, gated on an
+  explicitly configured provider; skips without one).
+- Docker build verification — needs a Docker host. (`docker compose
+  config` validation was not possible here either — no Docker binary.)
+- DOCX upload check against a real file.
 - Ollama counts as "configured" by base URL alone, so AI endpoints attempt
   a call and fall back when Ollama is down (by design, but the error copy
   could be clearer — e.g. distinguish "not configured" from "unreachable").
-- `npm audit` not run as part of this phase; run before any shared deployment.
+- `npm audit` could not run in this sandbox: the registry policy blocks
+  the audit endpoint (`/-/npm/v1/security/audits/quick` → 403
+  `policy_denied`, 2026-11-16). Run it on a machine with registry access
+  before any shared deployment; Next.js 14.2.18's flagged vulnerability
+  is still unevaluated for that reason.
 - Playwright browsers live in `~/.cache/ms-playwright` (Chromium 1148,
   ~161 MB); E2E on a fresh machine needs `npx playwright install chromium`
   (network to the Playwright CDN — the first attempt in this sandbox timed
   out and succeeded on retry).
+
+## Remediation sprint 2026-11-16 (this phase)
+
+Production-readiness remediation, 19 defects found by inspection (see
+`REMEDIATION_PLAN.md`) plus the sibling auto-import change (resume-first
+candidate creation, JD-first application creation — local commit
+`2eca6b2`, already on GitHub `main`) and the user's authoritative
+file-based Natively spec (implemented as the Skill lifecycle below).
+Full account: `REMEDIATION_REPORT.md`.
+
+- [x] **Resume selection** — `lib/context.ts` `resolveResumeForApplication`
+  (selected resume wins, must belong to the candidate; 400 on an invalid
+  selection; active resume only when nothing is selected). Match, prep,
+  and Skill generation all resolve through it.
+- [x] **Natively Skill lifecycle** — statuses
+  `not_generated/generated/file_written/awaiting_import/imported/
+  activation_verified/outdated/failed` (`db/migrations/002_remediation.sql`,
+  `skill_versions` table); writing a file never marks it imported;
+  preview, regenerate with 409 confirm, version history + restore,
+  delete Skill, manual Mark imported / Mark activation verified /
+  Mark outdated, outdated detection via `resume_version` + `jd_hash`.
+- [x] **Deletion cleanup** — permanent candidate delete removes uploads
+  and owned Skill files; application delete removes only its own Skill
+  files; errors collected and reported, never silent.
+- [x] **Key encryption** — AES-256-GCM (`lib/secrets.ts`,
+  `INTERVIEWHUB_SECRET` / generated `data/.secret-key` / macOS Keychain
+  when `INTERVIEWHUB_USE_KEYCHAIN=1`); legacy plaintext re-encrypted on
+  first read; masked + last4 only; excluded from backups; active store
+  shown on the AI Settings page.
+- [x] **Auth / network** — localhost-only by default (`next start -H
+  127.0.0.1`, Compose `127.0.0.1:3000:3000`); optional `APP_PASSWORD`
+  (HMAC sessions, CSRF double-submit, 5 login attempts / 15 min / IP);
+  remote requests without a password refused 403; `X-Forwarded-For`
+  honoured only with `TRUST_PROXY=1`.
+- [x] **Upload validation** — magic bytes (`lib/security.ts`); extraction
+  failure deletes the temp file and returns 400 with no half-created row.
+- [x] **Rate limiting** — bounded LRU (max 1000 IPs, 5-min TTL sweep,
+  100 req/min/IP).
+- [x] **PDF/OCR** — scanned/image-only detection (`< 50` meaningful chars
+  or `< 20` chars/page) → `needs_review` + warning, never "processed";
+  per-page char counts; OCR via tesseract when installed, otherwise a
+  clear 422-style message and manual text entry. (No page renderer in
+  this codebase, so tesseract cannot be fed page images yet — see
+  `REMEDIATION_REPORT.md`.)
+- [x] **Long documents** — no silent truncation; `skill_context_chars`
+  setting (default 12000), RAG-based excerpt selection, explicit
+  "truncated: N chars omitted" warning block in the Skill.
+- [x] **AI reliability** — mocked provider tests (invalid key, Ollama
+  down, model missing, timeout, 429 + retry, malformed JSON, empty
+  response, OpenRouter → Ollama → template fallback, usage recording);
+  structured prompts with `<UNTRUSTED DATA>` delimiters + JSON-schema
+  validation; injection tests (no secret leak, no behaviour change).
+- [x] **Docker** — ARM64-capable `node:20-alpine`, non-root user,
+  persistent `./data` volume, HEALTHCHECK on `/api/health`,
+  `OLLAMA_BASE_URL=http://host.docker.internal:11434` with `extra_hosts`
+  host-gateway, localhost-only port binding. **Build not verified here
+  (no Docker in sandbox).**
+- [x] **Verification this phase** — `npm test` 180/180 (28 files),
+  Playwright E2E 1/1, `npx tsc --noEmit` clean, `npm run build` clean
+  (13/13 pages + `/login`), live smoke on the production build (fresh
+  DB → candidate → resume → application → JD → Skill `file_written` →
+  backup export with no key → `PRAGMA integrity_check` ok,
+  `foreign_key_check` empty → restart persistence → permanent delete
+  removed 3 files). `npm audit` blocked by sandbox registry policy
+  (see above).

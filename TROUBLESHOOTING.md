@@ -58,11 +58,24 @@
 
 ## Natively skills
 
-- **"Generate SKILL.md" fails** — the application must exist and
-  `SKILLS_DIR` must be writable. Check `GET /api/natively/status?application_id=<id>`
-  for the last sync error.
+- **"Generate Natively Skill" fails** — the application must exist, must
+  have a JD, and `SKILLS_DIR` must be writable. Check
+  `GET /api/natively/status?application_id=<id>` for the last sync error.
+- **"Cannot mark 'activated' from status 'file_written'"** — import the
+  file in Natively first, then click **Mark as imported**; activation can
+  only be confirmed after import.
+- **Regenerate returns 409 "needs_confirmation"** — a Skill already exists
+  for this application; confirm the overwrite in the dialog. The previous
+  version is saved and restorable from **Version history**.
+- **Skill shows "Outdated"** — the resume version or JD changed since
+  generation. Regenerate to refresh it.
 - **Skill file not where you expected** — default is
-  `./data/skills/`; `SKILLS_DIR` overrides it (env or compose file).
+  `./data/skills/`; `SKILLS_DIR` overrides it (env or compose file). The
+  application page shows the exact absolute path after generation.
+- **Natively doesn't list the skill** — InterviewHub only writes the file;
+  it cannot see inside Natively. Re-check the manual import steps on the
+  Natively page (open Natively → Skills → add the `interview-*.md` file)
+  and confirm the file path matches the one shown in InterviewHub.
 
 ## Backup / restore
 
@@ -77,10 +90,13 @@
 
 ## Orphaned files
 
-- **A permanently deleted candidate's files remain in `data/uploads/`** —
-  known limitation: only resume deletes remove the stored file. Remove the
-  `data/uploads/<candidateId>/` directory by hand after a permanent
-  candidate delete (the candidate id is in the backup JSON if you need it).
+- Permanent candidate deletes now remove resume uploads, generated Skill
+  files, chunks and FTS rows (see the delete response's `files_removed` /
+  `file_errors`). If `file_errors` is non-empty, a file could not be
+  removed (permissions, or it was already gone) — the paths are listed in
+  the response; remove them by hand. Pre-remediation databases may still
+  hold orphans from earlier deletes: check `data/uploads/` for directories
+  whose candidate id no longer exists in the DB.
 
 ## Tests
 

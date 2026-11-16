@@ -89,11 +89,25 @@ verified stories first. Drafts are never auto-verified.
 
 ## 8. Natively skills
 
-On the application page, **Generate SKILL.md** writes
+On the application page, **Preview** shows the exact Skill content first;
+**Generate Natively Skill** writes the standalone
 `interview-<candidate>-<company>-<role>.md` (into `SKILLS_DIR`, default
-`./data/skills/`) containing the candidate summary, resume/JD excerpts and
-STAR stories, plus the factual-accuracy rules. **Download SKILL.md** fetches
-the file. `/natively` lists all generated skills and their sync status.
+`./data/skills/`) containing the candidate summary, the selected resume's
+evidence, the JD, and STAR stories, plus the factual-accuracy rules.
+**Download** fetches the file, **Copy file path** copies its absolute path,
+**Version history** restores any previous version, and **Delete Skill**
+removes the file (the application and resumes are untouched). `/natively`
+lists all generated skills with their lifecycle status.
+
+Statuses: `file_written` (file exists on disk — this is all generation
+proves), `awaiting_import`, `imported`, `activation_verified`, `outdated`
+(resume or JD changed since generation — regenerate), `failed`. Import the
+file in Natively yourself (open Natively → Skills → add the
+`interview-*.md` file → confirm → activate → test with a question), then
+click **Mark as imported** and **Mark activation verified** — those are the
+only way a Skill becomes "imported" or "activated" in InterviewHub. If two
+applications share a company and role, the second Skill gets a `-2` suffix
+instead of overwriting the first.
 
 ## 9. AI Settings
 

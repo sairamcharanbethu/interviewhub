@@ -44,13 +44,21 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     const row = get<Row>(`SELECT * FROM candidates WHERE id = ?`, params.id);
     if (!row) throw notFound('Candidate not found');
     if (permanent) {
-      // FK cascade removes the candidate's resumes/applications/chunks, but
-      // SQLite does not propagate that into the standalone FTS5 table —
-      // purge orphaned FTS rows or later chunk inserts can collide on a
-      // reused rowid and fail. (lib/rag.ts purgeOrphanFts)
+      // Snapshot on-disk files BEFORE the DB delete: FK cascade removes the
+      // rows these paths come from, and SQLite does not propagate deletes
+      // into the standalone FTS5 table — purge orphaned FTS rows or later
+      // chunk inserts can collide on a reused rowid and fail.
+      const { candidateFilePaths, deleteCandidateFilesFromSnapshot } = await import('@/lib/cleanup');
       const { purgeOrphanFts } = await import('@/lib/rag');
+      const filePaths = candidateFilePaths(params.id);
       transaction(() => { run(`DELETE FROM candidates WHERE id = ?`, params.id); purgeOrphanFts(); });
-      return NextResponse.json({ deleted: true, permanent: true });
+      const cleanup = deleteCandidateFilesFromSnapshot(params.id, filePaths);
+      return NextResponse.json({
+        deleted: true,
+        permanent: true,
+        files_removed: cleanup.removed.length,
+        file_errors: cleanup.errors,
+      });
     }
     run(`UPDATE candidates SET deleted_at = ?, updated_at = ? WHERE id = ?`, now(), now(), params.id);
     return NextResponse.json({ deleted: true, permanent: false });

@@ -9,6 +9,35 @@ import ApplicationForm, { type ApplicationFormData } from '@/components/Applicat
 import type { Application, Candidate, InterviewSession, MatchResult, PrepAnswer, PrepQuestion, Resume, SkillSync } from '@/lib/types';
 import { errMsg, fmtDateTime } from '@/lib/types';
 
+/** SkillSync row plus the remediation lifecycle fields (migration 002). */
+type SyncRow = SkillSync & {
+  resume_version?: number | null;
+  jd_hash?: string | null;
+  content_hash?: string | null;
+  version_number?: number | null;
+};
+
+const NATIVELY_STATUS_TONE: Record<string, 'green' | 'blue' | 'amber' | 'red' | 'gray'> = {
+  file_written: 'blue',
+  awaiting_import: 'amber',
+  imported: 'green',
+  activation_verified: 'green',
+  outdated: 'red',
+  failed: 'red',
+  generated: 'gray',
+  not_generated: 'gray',
+};
+
+const NATIVELY_IMPORT_STEPS = [
+  'Open Natively.',
+  'Navigate to Skills.',
+  'Add or point Natively to the generated interview Skill file.',
+  'Select the generated interview-*.md file.',
+  'Confirm that the Skill appears in Natively’s Skills list.',
+  'Activate the Skill.',
+  'Test it with an interview question.',
+];
+
 export default function ApplicationDetail() {
   const params = useParams<{ id: string }>();
   const id = params.id;
@@ -19,7 +48,13 @@ export default function ApplicationDetail() {
   const [candidates, setCandidates] = useState<Candidate[]>([]);
   const [resumes, setResumes] = useState<Resume[]>([]);
   const [sessions, setSessions] = useState<InterviewSession[]>([]);
-  const [syncs, setSyncs] = useState<SkillSync[]>([]);
+  const [syncs, setSyncs] = useState<SyncRow[]>([]);
+  const [natOutdated, setNatOutdated] = useState(false);
+  const [natOutputDir, setNatOutputDir] = useState('');
+  const [preview, setPreview] = useState<{ skill_name: string; content: string; truncated: boolean; omitted_chars: number } | null>(null);
+  const [versions, setVersions] = useState<Array<{ version_number: number; created_at: string; content_chars: number }>>([]);
+  const [versionsOpen, setVersionsOpen] = useState(false);
+  const [confirmRegen, setConfirmRegen] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [editOpen, setEditOpen] = useState(false);
@@ -55,9 +90,10 @@ export default function ApplicationDetail() {
         apiGet<{ candidate: Candidate }>(`/api/candidates/${a.application.candidate_id}`),
         apiGet<{ resumes: Resume[] }>(`/api/candidates/${a.application.candidate_id}/resumes`),
         apiGet<{ interview_sessions: InterviewSession[] }>(`/api/interview-sessions?application_id=${encodeURIComponent(id)}`),
-        apiGet<{ syncs: SkillSync[] }>(`/api/natively/status?application_id=${encodeURIComponent(id)}`),
+        apiGet<{ syncs: SyncRow[]; outdated: boolean; output_dir: string }>(`/api/natively/status?application_id=${encodeURIComponent(id)}`),
       ]);
       setCandidate(c.candidate); setResumes(rs.resumes); setSessions(ss.interview_sessions); setSyncs(sy.syncs);
+      setNatOutdated(Boolean(sy.outdated)); setNatOutputDir(sy.output_dir || '');
       const all = await apiGet<{ candidates: Candidate[] }>('/api/candidates');
       setCandidates(all.candidates);
     } catch (e) { setError(errMsg(e)); } finally { setLoading(false); }
@@ -124,11 +160,60 @@ export default function ApplicationDetail() {
     try { const u = await apiPatch<{ application: Application }>(`/api/applications/${id}`, { notes: notesDraft }); setApp(u.application); toast('Notes saved'); }
     catch (e) { toast(errMsg(e), 'err'); } finally { setNotesSaving(false); }
   };
-  const nativelyGenerate = async () => {
+  const nativelyGenerate = async (confirmOverwrite = false) => {
     setNatBusy('gen');
     try {
-      const r = await apiPost<{ skill_name: string; skill_path: string; status: string }>('/api/natively/generate', { application_id: id });
-      toast(`Skill generated: ${r.skill_name}`); await load();
+      const res = await fetch('/api/natively/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ application_id: id, confirm_overwrite: confirmOverwrite }) });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 409 && (data as { needs_confirmation?: boolean }).needs_confirmation) { setConfirmRegen(true); return; }
+      if (!res.ok) throw new Error((data as { error?: string }).error || `Generate failed (${res.status})`);
+      const r = data as { skill_name: string; status: string; truncated?: boolean; omitted_chars?: number };
+      toast(`Skill written: ${r.skill_name}${r.truncated ? ` — excerpts used, ${r.omitted_chars ?? 0} chars omitted (full text stays in InterviewHub)` : ''}`);
+      setConfirmRegen(false); await load();
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setNatBusy(''); }
+  };
+  const nativelyPreview = async () => {
+    setNatBusy('preview');
+    try {
+      const r = await apiPost<{ skill_name: string; content: string; truncated: boolean; omitted_chars: number }>('/api/natively/preview', { application_id: id });
+      setPreview(r);
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setNatBusy(''); }
+  };
+  const nativelyConfirm = async (action: 'imported' | 'activated' | 'outdated' | 'awaiting_import') => {
+    setNatBusy(`confirm-${action}`);
+    try {
+      const r = await apiPost<{ status: string }>('/api/natively/confirm', { application_id: id, action });
+      toast(`Skill status: ${r.status}`); await load();
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setNatBusy(''); }
+  };
+  const nativelyCopyPath = async () => {
+    const p = syncs[0]?.skill_path;
+    if (!p) return;
+    try { await navigator.clipboard.writeText(p); toast('File path copied'); }
+    catch { toast(p, 'err'); }
+  };
+  const nativelyDelete = async () => {
+    if (!window.confirm('Delete the generated Skill file and its version history? The application, candidate, and resumes are untouched.')) return;
+    setNatBusy('del');
+    try {
+      const res = await fetch(`/api/natively/delete?application_id=${encodeURIComponent(id)}`, { method: 'DELETE' });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { error?: string }).error || `Delete failed (${res.status})`);
+      toast('Skill deleted'); await load();
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setNatBusy(''); }
+  };
+  const nativelyLoadVersions = async () => {
+    try {
+      const r = await apiGet<{ versions: Array<{ version_number: number; created_at: string; content_chars: number }> }>(`/api/natively/versions?application_id=${encodeURIComponent(id)}`);
+      setVersions(r.versions); setVersionsOpen(true);
+    } catch (e) { toast(errMsg(e), 'err'); }
+  };
+  const nativelyRestoreVersion = async (versionNumber: number) => {
+    setNatBusy(`restore-${versionNumber}`);
+    try {
+      const r = await apiPost<{ restored_version: number; skill_name: string }>('/api/natively/versions', { application_id: id, version_number: versionNumber });
+      toast(`Restored Skill version ${r.restored_version} — re-confirm import/activation in Natively`);
+      setVersionsOpen(false); await load();
     } catch (e) { toast(errMsg(e), 'err'); } finally { setNatBusy(''); }
   };
   const nativelyDownload = async () => {
@@ -312,16 +397,81 @@ export default function ApplicationDetail() {
       </Card>
 
       <Card>
-        <h2 className="font-semibold">Natively skill</h2>
+        <h2 className="font-semibold">Natively skill — file-based export</h2>
         <p className="mt-1 text-sm text-gray-600">Naming convention: <code className="rounded bg-gray-100 px-1">{skillName || 'interview-{candidate}-{company}-{role}'}</code></p>
-        <p className="mt-1 text-xs text-gray-500">Sync status: {syncs.length ? `${syncs[0].status || 'unknown'} — last synced ${fmtDateTime(syncs[0].last_synced)}` : 'never generated'}{syncs[0]?.error ? ` · Error: ${syncs[0].error}` : ''}</p>
+        {syncs.length ? (
+          <div className="mt-3 space-y-1 text-sm">
+            <p>
+              Status: <Badge tone={NATIVELY_STATUS_TONE[syncs[0].status || ''] || 'gray'}>{syncs[0].status || 'unknown'}</Badge>
+              {natOutdated ? <span className="ml-2"><Badge tone="red">Outdated — resume or JD changed</Badge></span> : null}
+            </p>
+            <p className="break-all"><span className="text-gray-500">File:</span> {syncs[0].skill_name}.md</p>
+            <p className="break-all"><span className="text-gray-500">Path:</span> {syncs[0].skill_path || '—'}</p>
+            <p><span className="text-gray-500">Output directory:</span> {natOutputDir || '—'}</p>
+            <p><span className="text-gray-500">Last generated:</span> {fmtDateTime(syncs[0].last_synced)}</p>
+            <p><span className="text-gray-500">Resume version:</span> {syncs[0].resume_version ?? '—'} · <span className="text-gray-500">JD version:</span> {syncs[0].jd_hash ? syncs[0].jd_hash.slice(0, 12) : '—'}</p>
+            {syncs[0].error ? <p className="text-red-700">Error: {syncs[0].error}</p> : null}
+          </div>
+        ) : (
+          <p className="mt-2 text-sm text-gray-500">Not generated yet. The Skill uses the application&apos;s selected resume ({app.selected_resume_id ? `v${resumes.find((r) => r.id === app.selected_resume_id)?.version ?? '?'}` : 'active version'}) and the stored JD.</p>
+        )}
         <div className="mt-3 flex flex-wrap gap-2">
-          <Button onClick={nativelyGenerate} disabled={natBusy === 'gen'}>{natBusy === 'gen' ? 'Generating…' : 'Generate SKILL.md'}</Button>
-          <Button variant="secondary" onClick={nativelyDownload} disabled={natBusy === 'dl' || !syncs.length}>{natBusy === 'dl' ? 'Downloading…' : 'Download SKILL.md'}</Button>
+          <Button onClick={nativelyPreview} disabled={natBusy === 'preview' || !app.jd_text}>{natBusy === 'preview' ? 'Loading…' : 'Preview'}</Button>
+          <Button onClick={() => nativelyGenerate(false)} disabled={natBusy === 'gen' || !app.jd_text}>{natBusy === 'gen' ? 'Generating…' : syncs.length ? 'Regenerate' : 'Generate Natively Skill'}</Button>
+          <Button variant="secondary" onClick={nativelyDownload} disabled={natBusy === 'dl' || !syncs.length}>{natBusy === 'dl' ? 'Downloading…' : 'Download'}</Button>
+          <Button variant="secondary" onClick={nativelyCopyPath} disabled={!syncs.length}>Copy file path</Button>
+          <Button variant="secondary" onClick={nativelyLoadVersions} disabled={!syncs.length}>Version history</Button>
         </div>
-        {syncs.length ? <p className="mt-2 text-xs text-gray-500">File: {syncs[0].skill_path || syncs[0].skill_name}</p> : null}
-        <p className="mt-3 text-xs text-amber-700">A generated file is NOT proof Natively loaded it — verify inside Natively after activating the skill (see the Natively page for the manual steps).</p>
+        {syncs.length ? (
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button variant="secondary" onClick={() => nativelyConfirm('imported')} disabled={natBusy.startsWith('confirm') || syncs[0].status === 'imported' || syncs[0].status === 'activation_verified'}>Mark as imported</Button>
+            <Button variant="secondary" onClick={() => nativelyConfirm('activated')} disabled={natBusy.startsWith('confirm') || syncs[0].status !== 'imported'}>Mark activation verified</Button>
+            <Button variant="secondary" onClick={() => nativelyConfirm('outdated')} disabled={natBusy.startsWith('confirm') || syncs[0].status === 'outdated'}>Mark as outdated</Button>
+            <Button variant="danger" onClick={nativelyDelete} disabled={natBusy === 'del'}>Delete Skill</Button>
+          </div>
+        ) : null}
+        <div className="mt-4 rounded bg-gray-50 p-3 text-sm">
+          <p className="font-semibold">Manual import into Natively</p>
+          <ol className="mt-1 list-decimal space-y-0.5 pl-5 text-gray-700">
+            {NATIVELY_IMPORT_STEPS.map((s) => <li key={s}>{s}</li>)}
+          </ol>
+          <p className="mt-2 text-xs text-amber-700">A generated file is NOT proof Natively loaded it. Import and activation are confirmed only when you click “Mark as imported” / “Mark activation verified” above after doing the steps in Natively. This Skill works without Natively Pro&apos;s Reference Files feature.</p>
+        </div>
       </Card>
+
+      <Modal open={!!preview} onClose={() => setPreview(null)} title={preview ? `Preview — ${preview.skill_name}.md` : ''} wide>
+        {preview ? (
+          <div className="space-y-3">
+            {preview.truncated ? <p className="rounded bg-amber-50 p-2 text-sm text-amber-800">Excerpts used — {preview.omitted_chars} characters omitted. The full resume and JD remain in InterviewHub.</p> : <p className="rounded bg-green-50 p-2 text-sm text-green-800">Complete documents included — nothing omitted.</p>}
+            <pre className="max-h-96 overflow-auto whitespace-pre-wrap rounded border bg-gray-50 p-3 text-xs">{preview.content}</pre>
+            <div className="flex gap-2">
+              <Button onClick={() => { setPreview(null); nativelyGenerate(false); }}>Generate this Skill</Button>
+              <Button variant="secondary" onClick={() => setPreview(null)}>Close</Button>
+            </div>
+          </div>
+        ) : null}
+      </Modal>
+
+      <Modal open={versionsOpen} onClose={() => setVersionsOpen(false)} title="Skill version history">
+        {versions.length === 0 ? <p className="text-sm text-gray-500">No previous versions saved yet — a version is saved each time a Skill is regenerated over an existing file.</p> : (
+          <ul className="space-y-2 text-sm">
+            {versions.map((v) => (
+              <li key={v.version_number} className="flex flex-wrap items-center justify-between gap-2 rounded border p-2">
+                <span>v{v.version_number} — {fmtDateTime(v.created_at)} · {v.content_chars} chars</span>
+                <Button variant="secondary" onClick={() => nativelyRestoreVersion(v.version_number)} disabled={natBusy === `restore-${v.version_number}`}>Restore this version</Button>
+              </li>
+            ))}
+          </ul>
+        )}
+      </Modal>
+
+      <Modal open={confirmRegen} onClose={() => setConfirmRegen(false)} title="Regenerate Skill?">
+        <p className="text-sm text-gray-700">A Skill file already exists for this application. Regenerating replaces it — the previous version is saved and can be restored from Version history.</p>
+        <div className="mt-4 flex gap-2">
+          <Button onClick={() => nativelyGenerate(true)}>Regenerate and replace</Button>
+          <Button variant="secondary" onClick={() => setConfirmRegen(false)}>Cancel</Button>
+        </div>
+      </Modal>
 
       <Modal open={editOpen} onClose={() => setEditOpen(false)} title={`Edit ${app.company} — ${app.title}`} wide>
         <ApplicationForm initial={app} candidates={candidates} saving={saving} onCancel={() => setEditOpen(false)} onSubmit={async (d: ApplicationFormData) => {

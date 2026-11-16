@@ -40,12 +40,21 @@ export async function DELETE(req: Request, { params }: { params: { id: string } 
     const row = get<Row>(`SELECT * FROM applications WHERE id = ?`, params.id);
     if (!row) throw notFound('Application not found');
     if (permanent) {
-      // FK cascade removes the application's sessions/chunks, but SQLite
-      // does not propagate that into the standalone FTS5 table — purge
-      // orphaned FTS rows (see lib/rag.ts purgeOrphanFts).
+      // Snapshot this application's Skill files BEFORE the DB delete (FK
+      // cascade removes the skills_sync rows they come from). Candidate
+      // resumes and other applications are untouched. FTS5 orphans are
+      // purged the same way as for candidates (see lib/rag.ts).
+      const { applicationSkillPaths, deleteApplicationFilesFromSnapshot } = await import('@/lib/cleanup');
       const { purgeOrphanFts } = await import('@/lib/rag');
+      const skillPaths = applicationSkillPaths(params.id);
       transaction(() => { run(`DELETE FROM applications WHERE id = ?`, params.id); purgeOrphanFts(); });
-      return NextResponse.json({ deleted: true, permanent: true });
+      const cleanup = deleteApplicationFilesFromSnapshot(skillPaths);
+      return NextResponse.json({
+        deleted: true,
+        permanent: true,
+        skill_files_removed: cleanup.removed.length,
+        file_errors: cleanup.errors,
+      });
     }
     run(`UPDATE applications SET deleted_at = ?, updated_at = ? WHERE id = ?`, now(), now(), params.id);
     return NextResponse.json({ deleted: true, permanent: false });

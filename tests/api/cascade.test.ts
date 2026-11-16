@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, it } from 'vitest';
 import { cleanupTempDir, jsonBody, jsonReq, makeTempDataDir } from '../helpers';
-import { NAGA_RESUME } from '../fixtures';
+import { HARRIS_JD, NAGA_RESUME } from '../fixtures';
 
 const dir = makeTempDataDir();
 afterAll(() => cleanupTempDir(dir));
@@ -13,6 +13,7 @@ const { DELETE: deleteApplication } = await import('@/app/api/applications/[id]/
 const { POST: createStar } = await import('@/app/api/star-stories/route');
 const { POST: createSession } = await import('@/app/api/interview-sessions/route');
 const { POST: generateSkill } = await import('@/app/api/natively/generate/route');
+const { POST: pasteJd } = await import('@/app/api/applications/[id]/jd/route');
 const dbLib = await import('@/lib/db');
 
 function count(table: string, where: string, id: string): number {
@@ -32,7 +33,11 @@ async function seedFull(): Promise<{ candidateId: string; applicationId: string 
   const applicationId = ((await jsonBody(a)).application as Record<string, unknown>).id as string;
   await createStar(jsonReq('http://localhost/api/star-stories', 'POST', { candidate_id: candidateId, title: 'A story' }));
   await createSession(jsonReq('http://localhost/api/interview-sessions', 'POST', { application_id: applicationId, candidate_id: candidateId, title: 'Round 1' }));
-  await generateSkill(jsonReq('http://localhost/api/natively/generate', 'POST', { application_id: applicationId }));
+  // Skill generation requires a JD (spec §4 step 4 / §8) — seed one.
+  const jd = await pasteJd(jsonReq('http://localhost/api/applications', 'POST', { jd_text: HARRIS_JD }), { params: { id: applicationId } });
+  expect(jd.status).toBe(200);
+  const gen = await generateSkill(jsonReq('http://localhost/api/natively/generate', 'POST', { application_id: applicationId }));
+  expect(gen.status).toBe(201);
   return { candidateId, applicationId };
 }
 

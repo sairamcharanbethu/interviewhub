@@ -58,9 +58,10 @@ export interface AiSettings {
   id: number; openrouter_model: string; ollama_base_url: string; ollama_model: string;
   default_provider: string; routing: Record<string, AiRoute | string> | null; fallback_model?: string | null;
   has_openrouter_key: boolean; openrouter_key_last4?: string | null;
+  secret_storage?: 'env' | 'keychain' | 'file' | 'none' | null; secret_storage_has_key?: boolean;
 }
 export interface AiUsageRow { id: string; provider?: string | null; model?: string | null; task?: string | null; tokens_in?: number | null; tokens_out?: number | null; cost_usd?: number | null; created_at: string }
-export interface SkillSync { id: string; application_id: string; skill_name: string; skill_path?: string | null; status?: string | null; last_synced?: string | null; error?: string | null }
+export interface SkillSync { id: string; application_id: string; skill_name: string; skill_path?: string | null; status?: string | null; last_synced?: string | null; error?: string | null; resume_version?: number | null; jd_hash?: string | null; content_hash?: string | null; version_number?: number | null }
 export interface HealthData { status: string; db: string; ollama_reachable: boolean; openrouter_configured: boolean; timestamp: string }
 
 export function errMsg(e: unknown): string {

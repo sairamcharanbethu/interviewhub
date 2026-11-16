@@ -5,16 +5,17 @@ import { handleError, notFound, ApiError } from '@/lib/errors';
 import { computeMatch, refineMatchWithAI } from '@/lib/match';
 import { retrieveContext } from '@/lib/rag';
 import { getAiSettings } from '@/lib/ai/providers';
+import { resolveResumeForApplication } from '@/lib/context';
 
 export async function POST(req: Request, { params }: { params: { id: string } }) {
   try {
     const app = get<Record<string, unknown>>(`SELECT * FROM applications WHERE id = ? AND deleted_at IS NULL`, params.id);
     if (!app) throw notFound('Application not found');
     const body = await req.json().catch(() => ({})) as Record<string, unknown>;
-    const resumeId = (body.resume_id as string) || (app.selected_resume_id as string);
-    let resume = resumeId
-      ? get<Record<string, unknown>>(`SELECT * FROM resumes WHERE id = ? AND candidate_id = ?`, resumeId, app.candidate_id)
-      : get<Record<string, unknown>>(`SELECT * FROM resumes WHERE candidate_id = ? AND is_active = 1 ORDER BY version DESC LIMIT 1`, app.candidate_id);
+    // Single shared resolver (lib/context.ts): selected resume wins, invalid
+    // or cross-candidate selections fail with 400, active resume is the
+    // fallback. Match, Prep, and Skill generation all use this path.
+    const { resume } = resolveResumeForApplication(app, (body.resume_id as string) || null);
     if (!resume) throw new ApiError(400, 'No resume found for this candidate — upload a resume first');
     const candidate = get<Record<string, unknown>>(`SELECT * FROM candidates WHERE id = ?`, app.candidate_id);
     const parsed = parseJson<Record<string, unknown>>((resume.parsed as string) || null, {});
@@ -32,6 +33,7 @@ export async function POST(req: Request, { params }: { params: { id: string } })
     const { chunks } = retrieveContext({
       candidateId: app.candidate_id as string,
       applicationId: params.id,
+      resumeId: resume.id as string,
       query,
       limit: 12,
       redactPii: settings.redact_pii,

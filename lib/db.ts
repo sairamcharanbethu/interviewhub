@@ -37,8 +37,43 @@ export function db(): Database.Database {
       conn.exec(`ALTER TABLE document_chunks ADD COLUMN source_type TEXT NOT NULL DEFAULT 'resume'`);
     }
   }
-  const mig = fs.readFileSync(path.join(process.cwd(), 'db', 'migrations', '001_init.sql'), 'utf8');
-  conn.exec(mig);
+  // Run every migration in db/migrations in filename order, tracked in
+  // schema_migrations so each file applies once. ADD COLUMN statements are
+  // skipped when the column already exists (idempotent re-runs and
+  // databases that predate a migration file).
+  conn.exec(`CREATE TABLE IF NOT EXISTS schema_migrations (filename TEXT PRIMARY KEY, applied_at TEXT NOT NULL DEFAULT (datetime('now')))`);
+  const applied = new Set(
+    (conn.prepare(`SELECT filename FROM schema_migrations`).all() as Array<{ filename: string }>).map((r) => r.filename),
+  );
+  const migDir = path.join(process.cwd(), 'db', 'migrations');
+  const files = fs.existsSync(migDir) ? fs.readdirSync(migDir).filter((f) => f.endsWith('.sql')).sort() : [];
+  for (const file of files) {
+    if (applied.has(file)) continue;
+    const sql = fs.readFileSync(path.join(migDir, file), 'utf8');
+    // Split on statement boundaries conservatively: migrations are written
+    // one statement per block separated by blank lines + semicolons.
+    const statements = sql
+      .split(/;\s*\n/)
+      .map((s) =>
+        s
+          .split('\n')
+          .filter((l) => !l.trim().startsWith('--'))
+          .join('\n')
+          .trim(),
+      )
+      .filter(Boolean);
+    for (const stmt of statements) {
+      const text = stmt.endsWith(';') ? stmt : `${stmt};`;
+      try {
+        conn.exec(text);
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        if (/duplicate column name/i.test(msg)) continue; // already applied
+        throw e;
+      }
+    }
+    conn.prepare(`INSERT INTO schema_migrations (filename) VALUES (?)`).run(file);
+  }
   instance = conn;
   return conn;
 }

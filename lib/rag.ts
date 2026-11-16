@@ -25,6 +25,14 @@ export interface RagChunk {
 export interface RetrieveOptions {
   candidateId: string;
   applicationId?: string | null;
+  /**
+   * When set, resume chunks are restricted to this resume only (the
+   * application's selected resume). JD chunks for the application stay in
+   * scope. Without it, chunks from ALL of the candidate's resumes are
+   * eligible — callers that know the selected resume must pass it, so
+   * Match / Prep / Skill generation never mix resume versions.
+   */
+  resumeId?: string | null;
   query: string;
   limit?: number;
   /** Redact emails/phones from returned chunk text (PII setting). */
@@ -177,19 +185,23 @@ export function ftsQueryFromText(query: string): string | null {
  * scope — both are still strictly this candidate's data.
  */
 export function retrieveContext(opts: RetrieveOptions): RetrieveResult {
-  const { candidateId, applicationId, query, limit = 8, redactPii = false } = opts;
+  const { candidateId, applicationId, resumeId, query, limit = 8, redactPii = false } = opts;
   if (!candidateId) return { chunks: [], has_evidence: false, no_evidence_message: 'No evidence: candidate scope is required.' };
   const safeQuery = stripInjection(query || '');
   const ftsQuery = ftsQueryFromText(safeQuery);
+  // Resume scoping: when a selected resume is known, resume chunks must
+  // come from that resume only; JD chunks (resume_id IS NULL) stay eligible.
+  const resumeFilter = resumeId ? `AND (c.resume_id = ? OR c.resume_id IS NULL)` : '';
+  const resumeFilterPlain = resumeId ? `AND (resume_id = ? OR resume_id IS NULL)` : '';
   let rows: Record<string, unknown>[] = [];
   if (ftsQuery) {
     const appFilter = applicationId ? `AND (c.application_id = ? OR c.application_id IS NULL)` : '';
-    const params: unknown[] = [ftsQuery, candidateId, ...(applicationId ? [applicationId] : []), limit];
+    const params: unknown[] = [ftsQuery, candidateId, ...(applicationId ? [applicationId] : []), ...(resumeId ? [resumeId] : []), limit];
     rows = all<Record<string, unknown>>(
       `SELECT c.id, c.resume_id, c.application_id, c.candidate_id, c.chunk_text, c.chunk_index, c.source_type, f.rank AS fts_rank
        FROM document_chunks_fts f
        JOIN document_chunks c ON c.rowid = f.rowid
-       WHERE f.chunk_text MATCH ? AND c.candidate_id = ? ${appFilter}
+       WHERE f.chunk_text MATCH ? AND c.candidate_id = ? ${appFilter} ${resumeFilter}
        ORDER BY f.rank LIMIT ?`,
       ...params,
     );
@@ -200,8 +212,8 @@ export function retrieveContext(opts: RetrieveOptions): RetrieveResult {
     if (safeQuery.trim().length >= 2) {
       const appFilter = applicationId ? `AND (application_id = ? OR application_id IS NULL)` : '';
       rows = all<Record<string, unknown>>(
-        `SELECT id, resume_id, application_id, candidate_id, chunk_text, chunk_index, source_type FROM document_chunks WHERE candidate_id = ? ${appFilter} AND chunk_text LIKE ? LIMIT ?`,
-        candidateId, ...(applicationId ? [applicationId] : []), like, limit,
+        `SELECT id, resume_id, application_id, candidate_id, chunk_text, chunk_index, source_type FROM document_chunks WHERE candidate_id = ? ${appFilter} ${resumeFilterPlain} AND chunk_text LIKE ? LIMIT ?`,
+        candidateId, ...(applicationId ? [applicationId] : []), ...(resumeId ? [resumeId] : []), like, limit,
       );
     }
   }

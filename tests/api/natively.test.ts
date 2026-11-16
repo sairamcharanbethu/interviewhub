@@ -32,7 +32,9 @@ describe('natively generate', () => {
     const res = await generateSkill(jsonReq('http://localhost/api/natively/generate', 'POST', { application_id: applicationId }));
     expect(res.status).toBe(201);
     const body = await jsonBody(res);
-    expect(body.status).toBe('synced');
+    // File generation records 'file_written' — never 'synced'/'imported':
+    // import and activation need manual confirmation in Natively.
+    expect(body.status).toBe('file_written');
     expect(body.skill_name as string).toContain('interview-naga-iswarya-lakshmi-bhogadi-harris-computer');
     const skillPath = body.skill_path as string;
     expect(fs.existsSync(skillPath)).toBe(true);

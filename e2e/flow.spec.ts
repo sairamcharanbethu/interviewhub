@@ -106,14 +106,17 @@ test('candidate -> resume -> application -> JD -> match -> questions -> skill ->
   await page.getByRole('button', { name: 'Generate questions' }).click();
   await expect(page.getByText('Tell me about yourself').first()).toBeVisible();
 
-  await page.getByRole('button', { name: 'Generate SKILL.md' }).click();
-  await expect(page.getByText(/Skill generated:/).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Generate Natively Skill' }).click();
+  await expect(page.getByText(/Skill written:/).first()).toBeVisible();
 
   // Verify the SKILL.md file on disk via the status API (same machine).
+  // Generation records 'file_written' — never imported/activated.
   const status = await request.get(`/api/natively/status?application_id=${applicationId}`);
   expect(status.ok()).toBe(true);
-  const syncs = (await status.json()).syncs as Array<{ skill_path: string; skill_name: string }>;
+  const statusJson = await status.json();
+  const syncs = statusJson.syncs as Array<{ skill_path: string; skill_name: string; status: string }>;
   expect(syncs.length).toBeGreaterThan(0);
+  expect(syncs[0].status).toBe('file_written');
   const skillPath = syncs[0].skill_path;
   expect(fs.existsSync(skillPath)).toBe(true);
   const skill = fs.readFileSync(skillPath, 'utf8');
@@ -121,6 +124,14 @@ test('candidate -> resume -> application -> JD -> match -> questions -> skill ->
   expect(skill).toContain('Harris Computer');
   expect(skill).toContain('Technical Consultant – Oracle DBA');
   expect(skill).toContain('DXC Technology');
+
+  // Manual lifecycle: mark imported, then mark activation verified.
+  await page.getByRole('button', { name: 'Mark as imported' }).click();
+  await expect(page.getByText('imported', { exact: true }).first()).toBeVisible();
+  await page.getByRole('button', { name: 'Mark activation verified' }).click();
+  await expect(page.getByText('activation_verified', { exact: true }).first()).toBeVisible();
+  const status2 = await request.get(`/api/natively/status?application_id=${applicationId}`);
+  expect(((await status2.json()).syncs as Array<{ status: string }>)[0].status).toBe('activation_verified');
 
   // 5. Delete the application; the resume must remain.
   // Cards are `rounded-xl` divs; scope actions to the card that holds the link.

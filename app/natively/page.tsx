@@ -9,11 +9,28 @@ import { errMsg, fmtDateTime } from '@/lib/types';
 
 interface SkillFile { name: string; path: string }
 
+type SyncRow = SkillSync & {
+  resume_version?: number | null;
+  jd_hash?: string | null;
+};
+
+const STATUS_TONE: Record<string, 'green' | 'blue' | 'amber' | 'red' | 'gray'> = {
+  file_written: 'blue',
+  awaiting_import: 'amber',
+  imported: 'green',
+  activation_verified: 'green',
+  outdated: 'red',
+  failed: 'red',
+  generated: 'gray',
+};
+
 export default function NativelyPage() {
   const { toast, candidateId } = useApp();
   const [apps, setApps] = useState<Application[]>([]);
   const [files, setFiles] = useState<SkillFile[]>([]);
-  const [syncsByApp, setSyncsByApp] = useState<Record<string, SkillSync[]>>({});
+  const [outputDir, setOutputDir] = useState('');
+  const [syncsByApp, setSyncsByApp] = useState<Record<string, SyncRow[]>>({});
+  const [outdatedByApp, setOutdatedByApp] = useState<Record<string, boolean>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState('');
@@ -23,15 +40,17 @@ export default function NativelyPage() {
     try {
       const [a, f] = await Promise.all([
         apiGet<{ applications: Application[] }>(`/api/applications?include_archived=true${candidateId ? `&candidate_id=${encodeURIComponent(candidateId)}` : ''}`),
-        apiGet<{ skills: SkillFile[] }>('/api/natively/status'),
+        apiGet<{ skills: SkillFile[]; output_dir: string }>('/api/natively/status'),
       ]);
-      setApps(a.applications); setFiles(f.skills);
-      const map: Record<string, SkillSync[]> = {};
+      setApps(a.applications); setFiles(f.skills); setOutputDir(f.output_dir || '');
+      const map: Record<string, SyncRow[]> = {};
+      const outdated: Record<string, boolean> = {};
       for (const app of a.applications) {
-        const s = await apiGet<{ syncs: SkillSync[] }>(`/api/natively/status?application_id=${encodeURIComponent(app.id)}`);
+        const s = await apiGet<{ syncs: SyncRow[]; outdated: boolean }>(`/api/natively/status?application_id=${encodeURIComponent(app.id)}`);
         map[app.id] = s.syncs;
+        outdated[app.id] = Boolean(s.outdated);
       }
-      setSyncsByApp(map);
+      setSyncsByApp(map); setOutdatedByApp(outdated);
     } catch (e) { setError(errMsg(e)); } finally { setLoading(false); }
   };
   useEffect(() => { load(); }, [candidateId]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -39,8 +58,17 @@ export default function NativelyPage() {
   const generate = async (appId: string) => {
     setBusy(appId);
     try {
-      const r = await apiPost<{ skill_name: string; skill_path: string; status: string }>('/api/natively/generate', { application_id: appId });
-      toast(`Generated ${r.skill_name}`); await load();
+      const res = await fetch('/api/natively/generate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ application_id: appId, confirm_overwrite: true }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error((data as { error?: string }).error || `Generate failed (${res.status})`);
+      toast(`Skill written: ${(data as { skill_name: string }).skill_name}`); await load();
+    } catch (e) { toast(errMsg(e), 'err'); } finally { setBusy(''); }
+  };
+  const confirm = async (appId: string, action: 'imported' | 'activated') => {
+    setBusy(`${action}-${appId}`);
+    try {
+      const r = await apiPost<{ status: string }>('/api/natively/confirm', { application_id: appId, action });
+      toast(`Skill status: ${r.status}`); await load();
     } catch (e) { toast(errMsg(e), 'err'); } finally { setBusy(''); }
   };
   const download = async (appId: string) => {
@@ -67,12 +95,17 @@ export default function NativelyPage() {
 
       <Card>
         <h2 className="font-semibold">Manual activation instructions</h2>
+        <p className="mt-1 text-sm text-gray-600">Output directory: <code className="rounded bg-gray-100 px-1">{outputDir || 'data/skills/'}</code> (override with <code className="rounded bg-gray-100 px-1">SKILLS_DIR</code>). Each Skill is one standalone <code className="rounded bg-gray-100 px-1">interview-*.md</code> file — the file <em>is</em> the SKILL.md content.</p>
         <ol className="mt-2 list-decimal space-y-1 pl-5 text-sm text-gray-700">
-          <li>Generate the skill below (or from the application page) — the file is written to the skills directory on this machine (default: <code className="rounded bg-gray-100 px-1">data/skills/</code>, or <code className="rounded bg-gray-100 px-1">SKILLS_DIR</code> if set).</li>
-          <li>In Natively, open Skills and add / point it at that <code className="rounded bg-gray-100 px-1">interview-*.md</code> file (SKILL.md lives inside the generated skill file itself — the file <em>is</em> the SKILL.md, named <code className="rounded bg-gray-100 px-1">interview-….md</code>).</li>
-          <li>Confirm inside Natively that the skill appears and loads — look for the skill name in Natively&apos;s skill list.</li>
+          <li>Open Natively.</li>
+          <li>Navigate to Skills.</li>
+          <li>Add or point Natively to the generated interview Skill file.</li>
+          <li>Select the generated interview-*.md file.</li>
+          <li>Confirm that the Skill appears in Natively’s Skills list.</li>
+          <li>Activate the Skill.</li>
+          <li>Test it with an interview question.</li>
         </ol>
-        <p className="mt-3 rounded bg-amber-50 p-3 text-sm text-amber-800">⚠ A generated file is NOT proof Natively loaded it. InterviewHub only writes the file and records a &apos;synced&apos; row — it cannot see inside Natively. Verify in the Natively app before relying on it in an interview.</p>
+        <p className="mt-3 rounded bg-amber-50 p-3 text-sm text-amber-800">⚠ A generated file is NOT proof Natively loaded it. InterviewHub only writes the file — import and activation are recorded only when you click “Mark as imported” / “Mark activation verified” after completing the steps in Natively. No automatic discovery or activation is assumed. Skills work without Natively Pro’s Reference Files feature.</p>
       </Card>
 
       {failures.length > 0 ? (
@@ -96,17 +129,31 @@ export default function NativelyPage() {
             {apps.map((a) => {
               const syncs = syncsByApp[a.id] || [];
               const latest = syncs[0];
+              const outdated = outdatedByApp[a.id];
               return (
                 <li key={a.id} className="flex flex-wrap items-center justify-between gap-2 rounded border p-3 text-sm">
                   <span>
                     <Link className="font-medium text-blue-600 hover:underline" href={`/applications/${a.id}`}>{a.company} — {a.title}</Link>
                     <span className="block text-xs text-gray-500">
-                      {latest ? <>{latest.status === 'synced' ? <Badge tone="green">synced</Badge> : <Badge tone="red">{latest.status || 'failed'}</Badge>} {latest.skill_name} · {fmtDateTime(latest.last_synced)}{latest.error ? ` · ${latest.error}` : ''}</> : 'Never generated'}
+                      {latest ? (
+                        <>
+                          <Badge tone={STATUS_TONE[latest.status || ''] || 'gray'}>{latest.status || 'unknown'}</Badge>
+                          {outdated ? <span className="ml-1"><Badge tone="red">Outdated</Badge></span> : null}
+                          {` ${latest.skill_name}.md · ${fmtDateTime(latest.last_synced)} · resume v${latest.resume_version ?? '—'}`}
+                          {latest.error ? ` · ${latest.error}` : ''}
+                        </>
+                      ) : 'Never generated'}
                     </span>
                   </span>
-                  <span className="flex gap-1.5">
+                  <span className="flex flex-wrap gap-1.5">
                     <Button variant="secondary" onClick={() => generate(a.id)} disabled={busy === a.id}>{busy === a.id ? 'Generating…' : 'Generate'}</Button>
                     <Button variant="ghost" onClick={() => download(a.id)} disabled={busy === `dl-${a.id}` || !latest}>{busy === `dl-${a.id}` ? 'Downloading…' : 'Download'}</Button>
+                    {latest && latest.status !== 'imported' && latest.status !== 'activation_verified' ? (
+                      <Button variant="ghost" onClick={() => confirm(a.id, 'imported')} disabled={busy === `imported-${a.id}`}>Mark imported</Button>
+                    ) : null}
+                    {latest && latest.status === 'imported' ? (
+                      <Button variant="ghost" onClick={() => confirm(a.id, 'activated')} disabled={busy === `activated-${a.id}`}>Mark activation verified</Button>
+                    ) : null}
                   </span>
                 </li>
               );

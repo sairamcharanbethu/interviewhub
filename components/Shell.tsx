@@ -3,8 +3,11 @@ import Link from 'next/link';
 import { usePathname, useRouter } from 'next/navigation';
 import { useApp } from '@/components/context';
 
-const NAV = [
+const NAV_PRIMARY = [
+  { href: '/prepare', label: 'Prepare Interview' },
   { href: '/', label: 'Dashboard' },
+];
+const NAV_ADVANCED = [
   { href: '/candidates', label: 'Candidates' },
   { href: '/applications', label: 'Applications' },
   { href: '/prep', label: 'Interview Prep' },
@@ -15,6 +18,7 @@ const NAV = [
   { href: '/health', label: 'System Health' },
   { href: '/settings', label: 'Settings' },
 ];
+const NAV = [...NAV_PRIMARY, ...NAV_ADVANCED];
 
 export default function Shell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();
@@ -42,7 +46,17 @@ export default function Shell({ children }: { children: React.ReactNode }) {
           <p className="text-xs text-gray-500">Candidates · Resumes · Prep</p>
         </div>
         <nav className="flex-1 space-y-1 overflow-y-auto p-3">
-          {NAV.map((item) => {
+          {NAV_PRIMARY.map((item) => {
+            const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
+            return (
+              <Link key={item.href} href={item.href} aria-current={active ? 'page' : undefined}
+                className={`block rounded-lg px-3 py-2 text-sm font-medium ${active ? 'bg-blue-600 text-white' : 'text-gray-700 hover:bg-gray-200'}`}>
+                {item.label}
+              </Link>
+            );
+          })}
+          <p className="px-3 pt-4 text-xs font-semibold uppercase tracking-wide text-gray-400">Advanced</p>
+          {NAV_ADVANCED.map((item) => {
             const active = pathname === item.href || (item.href !== '/' && pathname.startsWith(item.href));
             return (
               <Link key={item.href} href={item.href} aria-current={active ? 'page' : undefined}

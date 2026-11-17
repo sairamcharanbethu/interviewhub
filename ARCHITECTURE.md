@@ -164,3 +164,93 @@ excerpts, STAR stories) and writes it atomically to `skillsDir()`.
 - **Playwright** (`playwright.config.ts`): boots the production build
   (`next start`) with a fresh tmp `DATA_DIR` via `webServer`, one real
   end-to-end flow in `e2e/flow.spec.ts`.
+
+## Prepare Interview refactor (2026-11-17)
+
+One-click flow: `POST /api/prepare` (multipart resume + JD text/URL/file)
+creates a row in `preparation_jobs` (migration `004_prepare_jobs.sql`) and
+enqueues it; a guarded singleton worker (`lib/prepare/runner.ts`,
+`ensureWorker()`, one job at a time, SQLite claim with 10-minute stale
+re-claim) runs stages in order. Progress advances only while the Next.js
+server runs (local-first constraint) — if the server stops, queued jobs
+resume on the next start via the claim.
+
+Stages (each skipped when already completed in `stage_results`, so retries
+are idempotent): reading_resume → building_profile → analyzing_jd →
+role_insight → questions_answers → star_study → company_research →
+building_skill → installing_natively → ready. Only stages 1–3 failing fail
+the job; stages 4–9 failing finish the job as `partial` with clear messages.
+Idempotency key: `prepare:` + sha256(resume bytes + JD text + email); a
+retry reuses the job's stored candidate_id/application_id and never creates
+a second candidate or application. `persistPrepPackage` is idempotent per
+application (one session, one STAR set).
+
+### Provider layer (`lib/ai/`)
+- One interface (`AiProvider` in `lib/ai/adapters.ts`): `isAvailable()`,
+  `testConnection()`, `completeJson(prompt, zodSchema)`, `completeText()`.
+  Adapters: OpenRouter (HTTPS, encrypted key), Codex CLI
+  (`codex exec --sandbox read-only --skip-git-repo-check --ephemeral
+  --output-schema <file> -o <answer> --json <prompt>`; auth via
+  `codex login status`; never reads `~/.codex/auth.json`), Antigravity CLI
+  (`agy -p <prompt> --output-format json --json-schema <schema>
+  --print-timeout 10m`; auth probe `agy models`; model list read live,
+  never hardcoded), Ollama (local HTTP), and the deterministic template
+  fallback (its complete* methods throw a marker — callers use template
+  logic, never pretend AI).
+- CLI calls are safe subprocesses only: `which` + allowlisted paths,
+  argument arrays (never shell strings), isolated temp cwd, strict timeouts
+  (120s Codex, 10m Antigravity cap), 2 MB output cap, one CLI call at a
+  time per provider (module semaphore), no secrets in env.
+  (`lib/ai/cli.ts`; test hook `__setCliRunner`.)
+- Registry (`lib/ai/registry.ts`): priority stored in
+  `ai_settings.provider_priority` (JSON, default
+  `[openrouter, codex, antigravity, ollama, fallback]`, user-changeable in
+  AI Settings). `selectProvider()` = first available in order;
+  `completeJsonWithFallback()` / `completeTextWithFallback()` try providers
+  in order, classify failures (auth_expired/quota/timeout/unavailable/
+  invalid_output), and return `{ origin: 'ai' | 'fallback' }`. Every
+  generated item records its origin; the UI labels "Generated with AI" vs
+  "Template fallback — AI unavailable".
+
+### AI-first extraction (`lib/ai/extract.ts`)
+Zod schemas `CandidateProfile` / `JobAnalysis`; every important fact is
+grounded (`{value, evidence, confidence}`) from source snippets. Unknown →
+null/empty/'Unknown', never invented. Resume/JD text is untrusted data
+(delimited blocks + `lib/ai/prompts.ts` safeguards). Invalid JSON / timeout
+/ failure → heuristic parser fallback, labelled.
+
+### Candidate reuse (`lib/prepare/candidate.ts`)
+Normalized-email exact match → reuse + new resume version; no match →
+create; multiple matches → flag `duplicate_candidate_ids` on the job, do
+NOT merge, proceed with a new candidate. Verified fields are only filled
+when blank — never overwritten by conflicting extracted values.
+
+### Role insight (`lib/prepare/prep-package.ts`)
+Deterministic score is the transparent fallback; AI refinement runs by
+default in the job. Clamp: AI may never raise the score above the
+deterministic score without cited resume evidence; with evidence, at most
+deterministic+10, with the justification recorded.
+
+### Company dossier (`lib/company.ts`)
+Firecrawl `/v2/search` with `FIRECRAWL_API_KEY` from the environment.
+Queries contain only the public company name (+ role domain words) — never
+resume text or PII. Cached 7 days in `company_dossiers` (SQLite). No key or
+any failure → dossier unavailable; the Skill gets research instructions
+instead. Never blocks the job.
+
+### Natively one-time confirmation
+`ai_settings.confirmed_natively_dir` (+ `confirmed_at`) stores the canonical
+realpath after the user confirms once in the Prepare UI
+(`POST /api/natively/confirm {action:'confirm_directory'}`). The job then
+installs silently using that directory (`resolveInstallDir()` in
+`lib/natively-install.ts`); if unconfirmed, the install stage fails, the job
+finishes `partial`, and the results screen offers confirm + install.
+`installed` means only "SKILL.md written into the verified directory".
+Skill content is capped at Natively's 100 KiB: lowest-priority sections
+(study guide, then answers) are dropped first and the omitted sections are
+recorded honestly in the file and in `stage_results`.
+
+### Untested live (mocked in tests)
+Live Natively install on the user's Mac, live Codex/Antigravity auth on the
+user's Mac, live OpenRouter calls, live Firecrawl — all mocked or skipped in
+tests (see README).

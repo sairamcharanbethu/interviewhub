@@ -27,6 +27,7 @@ export default defineConfig({
     env: {
       DATA_DIR: dataDir,
       SKILLS_DIR: path.join(dataDir, 'skills'),
+      NATIVELY_SKILLS_DIR: path.join(dataDir, 'natively-skills'),
       PORT: '3100',
     },
   },

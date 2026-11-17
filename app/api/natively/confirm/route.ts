@@ -3,6 +3,7 @@ import { NextResponse } from 'next/server';
 import { get, run, now } from '@/lib/db';
 import { handleError, ApiError, notFound } from '@/lib/errors';
 import { getLatestSync } from '@/lib/natively';
+import { setConfirmedNativelyDir, resolveInstallDir } from '@/lib/natively-install';
 
 /**
  * POST /api/natively/confirm { application_id, action }
@@ -27,6 +28,14 @@ export async function POST(req: Request) {
     const body = (await req.json().catch(() => ({}))) as Record<string, unknown>;
     const applicationId = body.application_id as string;
     const action = body.action as string;
+    // One-time Natively directory confirmation (no application needed):
+    // { action: 'confirm_directory', directory: <absolute path> }
+    if (action === 'confirm_directory') {
+      const directory = String(body.directory || body.resolved_path || '').trim();
+      if (!directory) throw new ApiError(400, 'directory is required');
+      const saved = setConfirmedNativelyDir(directory);
+      return NextResponse.json({ status: 'directory_confirmed', confirmed_natively_dir: saved.dir, confirmed_at: saved.confirmedAt });
+    }
     if (!applicationId) throw new ApiError(400, 'application_id is required');
     if (!ALLOWED[action]) throw new ApiError(400, `Unknown action: ${action}`);
     const sync = getLatestSync(applicationId);

@@ -2,6 +2,27 @@
 
 ## The flow
 
+The fastest path is **Prepare Interview** (`/prepare`, also the hero on the
+Dashboard): upload a resume and a job description, click **Prepare
+Interview**, and InterviewHub does the whole flow in the background —
+Candidate → Resume → Application → JD → Match → Prep → Skill — then
+installs the Skill into Natively. Watch the progress screen (plain-language
+stages), then the results screen tells you the match score, how many
+questions and STAR drafts were made, whether each part came from AI or the
+labelled template fallback, and the next step ("Open Natively and use
+/<skill-slug>"). If a stage fails, the job finishes as "partial" and you can
+retry just the failed stages from the results screen — retrying never
+creates a second candidate or application.
+
+First time only: you will be asked once to confirm Natively's Skills
+directory. If you skip it, preparation still runs; the install step is
+recorded as failed and the results screen offers the confirm + install
+action. No AI provider is required: if none is configured, everything is
+built from templates and labelled "Template fallback — AI unavailable".
+To enable AI, set an OpenRouter key once in AI Settings, or sign in with
+`codex login` / the Antigravity app on your Mac (AI Settings shows each
+provider's status and lets you reorder the priority).
+
 InterviewHub follows one flow: **Candidate → Resume → Application → JD →
 Match → Prep → Skill**. Everything else (STAR stories, settings, backup)
 supports that flow.

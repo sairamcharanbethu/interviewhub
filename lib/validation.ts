@@ -86,6 +86,7 @@ export const aiSettingsSchema = z.object({
   routing: z.record(routeValueSchema).optional().nullable(),
   fallback_model: z.string().max(200).optional().nullable(),
   redact_pii: z.boolean().optional().nullable(),
+  provider_priority: z.array(z.enum(['openrouter', 'codex', 'antigravity', 'ollama', 'fallback'])).optional().nullable(),
 });
 
 export const backupRestoreSchema = z.object({

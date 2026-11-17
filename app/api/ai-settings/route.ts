@@ -6,9 +6,10 @@ import { normalizeRoutingInput } from '@/lib/ai/routing';
 import { handleError, parseJsonBody, ApiError } from '@/lib/errors';
 import { maskKey } from '@/lib/security';
 import { getAiSettings, getSecretStorageInfo } from '@/lib/ai/providers';
+import { getProviderPriority, setProviderPriority, getProviderStatuses, type ProviderId } from '@/lib/ai/registry';
 import { encryptSecret, keychainAvailable, keychainDelete, keychainSet } from '@/lib/secrets';
 
-function publicSettings(row: Record<string, unknown>) {
+async function publicSettings(row: Record<string, unknown>) {
   // Mask against the *effective* key (decrypted DB value / Keychain / env),
   // never the raw stored column — the response carries only has_key + last4.
   const effectiveKey = getAiSettings().openrouter_key;
@@ -31,6 +32,8 @@ function publicSettings(row: Record<string, unknown>) {
     redact_pii: row.redact_pii === 1,
     has_openrouter_key: has_key,
     openrouter_key_last4: last4,
+    provider_priority: getProviderPriority(),
+    providers: await getProviderStatuses(),
     // Which store the encryption key / OpenRouter key currently lives in
     // ('env' = INTERVIEWHUB_SECRET, 'keychain' = macOS Keychain,
     // 'file' = data/.secret-key). Shown on the Settings page.
@@ -42,7 +45,7 @@ function publicSettings(row: Record<string, unknown>) {
 export async function GET() {
   try {
     const row = get<Record<string, unknown>>(`SELECT * FROM ai_settings WHERE id = 1`)!;
-    return NextResponse.json({ ai_settings: publicSettings(row) });
+    return NextResponse.json({ ai_settings: await publicSettings(row) });
   } catch (e) { return handleError(e); }
 }
 
@@ -82,6 +85,9 @@ export async function POST(req: Request) {
     } else {
       key = cur.openrouter_key as string | null;
     }
+    if (body.provider_priority !== undefined && Array.isArray(body.provider_priority)) {
+      try { setProviderPriority(body.provider_priority as ProviderId[]); } catch { /* invalid priority ignored */ }
+    }
     run(
       `UPDATE ai_settings SET openrouter_key = ?, openrouter_model = ?, ollama_base_url = ?, ollama_model = ?, default_provider = ?, routing = ?, fallback_model = ?, redact_pii = ? WHERE id = 1`,
       key,
@@ -96,6 +102,6 @@ export async function POST(req: Request) {
       body.redact_pii !== undefined && body.redact_pii !== null ? (body.redact_pii ? 1 : 0) : (cur.redact_pii ?? 0),
     );
     const row = get<Record<string, unknown>>(`SELECT * FROM ai_settings WHERE id = 1`)!;
-    return NextResponse.json({ ai_settings: publicSettings(row) });
+    return NextResponse.json({ ai_settings: await publicSettings(row) });
   } catch (e) { return handleError(e); }
 }

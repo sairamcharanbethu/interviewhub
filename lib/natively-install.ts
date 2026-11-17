@@ -87,6 +87,153 @@ export interface UninstallResult {
 export const NATIVELY_REFRESH_NOTE =
   'Bring Natively to the front — it re-reads the Skills folder when its window regains focus. If the skill does not appear, use Skills → Refresh in Natively. Installed means the file was written to Natively\'s Skills directory; it does not mean Natively has loaded or activated it.';
 
+/** One-time Natively directory confirmation (persisted in ai_settings). */
+export function getConfirmedNativelyDir(): { dir: string; confirmedAt: string | null } | null {
+  try {
+    const row = get<Record<string, unknown>>(`SELECT confirmed_natively_dir, confirmed_natively_at FROM ai_settings WHERE id = 1`);
+    const dir = row?.confirmed_natively_dir as string | undefined;
+    if (!dir) return null;
+    return { dir, confirmedAt: (row?.confirmed_natively_at as string) || null };
+  } catch { return null; }
+}
+
+export function setConfirmedNativelyDir(dir: string): { dir: string; confirmedAt: string } {
+  let canonical = dir;
+  try { canonical = fs.realpathSync(dir); } catch { canonical = path.normalize(dir); }
+  const ts = now();
+  run(`UPDATE ai_settings SET confirmed_natively_dir = ?, confirmed_natively_at = ? WHERE id = 1`, canonical, ts);
+  return { dir: canonical, confirmedAt: ts };
+}
+
+/** Install destination: the user-confirmed directory wins; otherwise the resolved (env/macOS-default) directory. */
+export function resolveInstallDir(): { resolved_path: string | null; source: string; verified: boolean; error: string | null; confirmed: boolean } {
+  const confirmed = getConfirmedNativelyDir();
+  if (confirmed) {
+    let exists = false;
+    let isDir = false;
+    try { const st = fs.statSync(confirmed.dir); exists = true; isDir = st.isDirectory(); } catch { /* missing */ }
+    return { resolved_path: confirmed.dir, source: 'confirmed', verified: exists && isDir, error: exists && !isDir ? `Confirmed Natively Skills path exists but is not a directory: ${confirmed.dir}` : null, confirmed: true };
+  }
+  const info = resolveNativelySkillsDir();
+  return { resolved_path: info.resolved_path, source: info.source, verified: info.verified, error: info.error, confirmed: false };
+}
+
+/**
+ * Install prebuilt Skill content (e.g. the full prep-package Skill from the
+ * Prepare job) into the verified Natively Skills directory. installSkill
+ * delegates here after generating content via prepareSkillContent.
+ */
+export function installPrebuiltSkill(
+  applicationId: string,
+  content: string,
+  opts: InstallOptions = {},
+): InstallResult {
+  const prepared = prepareSkillContent(applicationId, opts.explicitResumeId ?? null);
+  const { ctx, name, jdHash } = prepared;
+  const contentHash = sha256(content);
+  const dirInfo = resolveInstallDir();
+  if (!dirInfo.resolved_path) {
+    const msg = dirInfo.error || 'Natively Skills directory is not configured. Set NATIVELY_SKILLS_DIR to the absolute path of Natively\'s Skills directory, or install Natively so its default directory exists.';
+    recordInstallFailure(applicationId, msg);
+    throw new ApiError(400, msg);
+  }
+  if (!dirInfo.verified && !opts.confirm_directory) {
+    throw new InstallNeedsConfirmation(
+      `The Natively Skills directory ${dirInfo.resolved_path} could not be verified (${dirInfo.error || 'it does not exist yet'}). Confirm this is really Natively's Skills directory before installing — or install Natively first so the directory exists.`,
+      { needs_directory_confirmation: true, resolved_path: dirInfo.resolved_path, source: dirInfo.source, natively_detected: false, can_create: true },
+    );
+  }
+  const byteLength = Buffer.byteLength(content, 'utf8');
+  if (byteLength > MAX_SKILL_FILE_BYTES) {
+    const msg = `Generated Skill is ${byteLength} bytes, over Natively's ${MAX_SKILL_FILE_BYTES}-byte per-file limit. Reduce the Skill context budget in Natively settings and try again.`;
+    recordInstallFailure(applicationId, msg);
+    throw new ApiError(413, msg);
+  }
+  const slug = resolveInstallSlug(installSlugFor(name), applicationId);
+  const slugCheck = validateInstallSlug(slug);
+  if (!slugCheck.ok) {
+    recordInstallFailure(applicationId, slugCheck.error);
+    throw new ApiError(400, slugCheck.error);
+  }
+  const root = dirInfo.resolved_path;
+  try { fs.mkdirSync(root, { recursive: true }); } catch (e) {
+    const msg = `Could not create the Natively Skills directory ${root}: ${e instanceof Error ? e.message : String(e)}`;
+    recordInstallFailure(applicationId, msg);
+    throw new ApiError(500, msg);
+  }
+  let rootReal: string;
+  try { rootReal = fs.realpathSync(root); } catch {
+    const msg = `Could not resolve the Natively Skills directory ${root}`;
+    recordInstallFailure(applicationId, msg);
+    throw new ApiError(500, msg);
+  }
+  const folder = path.join(rootReal, slug);
+  const skillFile = path.join(folder, 'SKILL.md');
+  let previousContent: string | null = null;
+  let isUpdate = false;
+  try {
+    if (fs.existsSync(folder)) {
+      const folderReal = realpathInside(rootReal, folder, 'Existing Skill folder');
+      void folderReal;
+      const ownerRow = get<Record<string, unknown>>(`SELECT application_id FROM skills_sync WHERE install_slug = ? ORDER BY last_synced DESC LIMIT 1`, slug);
+      const ownedByThisApp = ownerRow && (ownerRow.application_id as string) === applicationId;
+      const existingFile = path.join(folder, 'SKILL.md');
+      if (fs.existsSync(existingFile)) previousContent = fs.readFileSync(existingFile, 'utf8');
+      isUpdate = Boolean(ownedByThisApp);
+      if (!ownedByThisApp) {
+        if (!opts.confirm_overwrite) {
+          throw new InstallNeedsConfirmation(
+            `A Skill folder '${slug}' already exists in Natively's Skills directory and is not registered to this application. Installing would replace it. Confirm to move the existing folder aside (it is preserved as a backup) and install this Skill.`,
+            { needs_confirmation: true, slug, skill_path: existingFile },
+          );
+        }
+        const backup = path.join(rootReal, `${slug}.backup-${Date.now().toString(36)}`);
+        fs.renameSync(folder, backup);
+        previousContent = null;
+      }
+    }
+    fs.mkdirSync(folder, { recursive: true });
+    const tmp = path.join(folder, `SKILL.md.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
+    try {
+      const fd = fs.openSync(tmp, 'w');
+      try { fs.writeFileSync(fd, content, 'utf8'); fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+      fs.renameSync(tmp, skillFile);
+    } catch (e) {
+      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best effort */ }
+      throw e;
+    }
+    const written = fs.readFileSync(skillFile, 'utf8');
+    if (sha256(written) !== contentHash) throw new Error('Installed Skill file failed verification (content hash mismatch)');
+  } catch (e) {
+    if (e instanceof InstallNeedsConfirmation) throw e;
+    if (e instanceof ApiError) { recordInstallFailure(applicationId, e.message); throw e; }
+    const msg = e instanceof Error ? e.message : String(e);
+    recordInstallFailure(applicationId, msg);
+    throw new ApiError(500, `Installation failed: ${msg}`);
+  }
+  const resumeVersion = (ctx.resume?.version as number | undefined) ?? null;
+  const ts = now();
+  const unchanged = previousContent !== null && sha256(previousContent) === contentHash;
+  void isUpdate;
+  transaction(() => {
+    if (previousContent !== null && !unchanged) recordSkillVersion(applicationId, name, skillFile, previousContent);
+    const prior = get<{ id: string; installed_at: string | null }>(`SELECT id, installed_at FROM skills_sync WHERE application_id = ? AND skill_name = ?`, applicationId, name);
+    if (prior) {
+      run(`UPDATE skills_sync SET skill_path = ?, status = 'installed', last_synced = ?, resume_version = ?, jd_hash = ?, content_hash = ?, version_number = version_number + 1, install_slug = ?, install_method = 'natively-auto', install_path = ?, installed_at = COALESCE(installed_at, ?), updated_at = ?, install_error = NULL, candidate_id = ? WHERE id = ?`,
+        skillFile, ts, resumeVersion, jdHash, contentHash, slug, skillFile, ts, ts, String(ctx.app.candidate_id || ''), prior.id);
+    } else {
+      run(`INSERT INTO skills_sync (id, application_id, candidate_id, skill_name, skill_path, status, last_synced, resume_version, jd_hash, content_hash, version_number, install_slug, install_method, install_path, installed_at, updated_at) VALUES (?, ?, ?, ?, ?, 'installed', ?, ?, ?, ?, 1, ?, 'natively-auto', ?, ?, ?)`,
+        newId('sync_'), applicationId, String(ctx.app.candidate_id || ''), name, skillFile, ts, resumeVersion, jdHash, contentHash, slug, skillFile, ts, ts);
+    }
+  });
+  const built = prepared.built;
+  return {
+    status: 'installed', slug, skill_name: name, skill_path: skillFile, installed_at: ts, updated_at: ts,
+    slash_command: `/${slug}`, content_hash: contentHash, truncated: built.truncated, omitted_chars: built.omittedChars,
+    unchanged, natively_dir: rootReal, refresh_note: NATIVELY_REFRESH_NOTE,
+  };
+}
+
 /** Thrown when the UI must ask the user a question before proceeding. */
 export class InstallNeedsConfirmation extends Error {
   status = 409;
@@ -188,6 +335,9 @@ export function installSkill(
   applicationId: string,
   opts: InstallOptions = {},
 ): InstallResult {
+  // Content is generated via prepareSkillContent (same resume/JD as the
+  // manual-export flow); the actual install lives in installPrebuiltSkill
+  // so the Prepare job can install its fuller prep-package Skill.
   let prepared;
   try {
     prepared = prepareSkillContent(applicationId, opts.explicitResumeId ?? null);
@@ -195,189 +345,7 @@ export function installSkill(
     if (e instanceof ApiError) recordInstallFailure(applicationId, e.message);
     throw e;
   }
-  const { ctx, name, built, jdHash, contentHash } = prepared;
-
-  const dirInfo = resolveNativelySkillsDir();
-  if (!dirInfo.resolved_path) {
-    const msg =
-      dirInfo.error ||
-      'Natively Skills directory is not configured. Set NATIVELY_SKILLS_DIR to the absolute path of Natively\'s Skills directory, or install Natively so its default directory exists.';
-    recordInstallFailure(applicationId, msg);
-    throw new ApiError(400, msg);
-  }
-  if (!dirInfo.verified && !opts.confirm_directory) {
-    throw new InstallNeedsConfirmation(
-      `The Natively Skills directory ${dirInfo.resolved_path} could not be verified (${dirInfo.exists ? 'it exists but is not a directory' : 'it does not exist yet'}). Confirm this is really Natively's Skills directory before installing — or install Natively first so the directory exists.`,
-      {
-        needs_directory_confirmation: true,
-        resolved_path: dirInfo.resolved_path,
-        source: dirInfo.source,
-        natively_detected: dirInfo.natively_detected,
-        can_create: dirInfo.can_create,
-      },
-    );
-  }
-
-  const content = built.content;
-  const byteLength = Buffer.byteLength(content, 'utf8');
-  if (byteLength > MAX_SKILL_FILE_BYTES) {
-    const msg = `Generated Skill is ${byteLength} bytes, over Natively's ${MAX_SKILL_FILE_BYTES}-byte per-file limit. Reduce the Skill context budget in Natively settings and try again.`;
-    recordInstallFailure(applicationId, msg);
-    throw new ApiError(413, msg);
-  }
-
-  const slug = resolveInstallSlug(installSlugFor(name), applicationId);
-  const slugCheck = validateInstallSlug(slug);
-  if (!slugCheck.ok) {
-    recordInstallFailure(applicationId, slugCheck.error);
-    throw new ApiError(400, slugCheck.error);
-  }
-
-  const root = dirInfo.resolved_path;
-  try {
-    fs.mkdirSync(root, { recursive: true });
-  } catch (e) {
-    const msg = `Could not create the Natively Skills directory ${root}: ${e instanceof Error ? e.message : String(e)}`;
-    recordInstallFailure(applicationId, msg);
-    throw new ApiError(500, msg);
-  }
-  let rootReal: string;
-  try {
-    rootReal = fs.realpathSync(root);
-  } catch (e) {
-    const msg = `Could not resolve the Natively Skills directory ${root}`;
-    recordInstallFailure(applicationId, msg);
-    throw new ApiError(500, msg);
-  }
-
-  const folder = path.join(rootReal, slug);
-  const skillFile = path.join(folder, 'SKILL.md');
-  let previousContent: string | null = null;
-  let isUpdate = false;
-
-  try {
-    if (fs.existsSync(folder)) {
-      // A folder with this slug already exists. Only proceed if it is
-      // registered to THIS application, or the user explicitly confirmed
-      // overwriting a foreign folder (which is then moved aside, not lost).
-      const folderReal = realpathInside(rootReal, folder, 'Existing Skill folder');
-      void folderReal;
-      const ownerRow = get<Record<string, unknown>>(
-        `SELECT application_id FROM skills_sync WHERE install_slug = ? ORDER BY last_synced DESC LIMIT 1`,
-        slug,
-      );
-      const ownedByThisApp = ownerRow && (ownerRow.application_id as string) === applicationId;
-      const existingFile = path.join(folder, 'SKILL.md');
-      if (fs.existsSync(existingFile)) previousContent = fs.readFileSync(existingFile, 'utf8');
-      isUpdate = Boolean(ownedByThisApp);
-      if (!ownedByThisApp) {
-        if (!opts.confirm_overwrite) {
-          throw new InstallNeedsConfirmation(
-            `A Skill folder '${slug}' already exists in Natively's Skills directory and is not registered to this application. Installing would replace it. Confirm to move the existing folder aside (it is preserved as a backup) and install this Skill.`,
-            { needs_confirmation: true, slug, skill_path: existingFile },
-          );
-        }
-        // Preserve the foreign folder instead of deleting it.
-        const backup = path.join(rootReal, `${slug}.backup-${Date.now().toString(36)}`);
-        fs.renameSync(folder, backup);
-        previousContent = null;
-      }
-    }
-
-    fs.mkdirSync(folder, { recursive: true });
-    // Atomic write: tmp file inside the destination folder, fsync, rename.
-    const tmp = path.join(folder, `SKILL.md.tmp-${process.pid}-${crypto.randomBytes(4).toString('hex')}`);
-    try {
-      const fd = fs.openSync(tmp, 'w');
-      try {
-        fs.writeFileSync(fd, content, 'utf8');
-        fs.fsyncSync(fd);
-      } finally {
-        fs.closeSync(fd);
-      }
-      fs.renameSync(tmp, skillFile);
-    } catch (e) {
-      try { if (fs.existsSync(tmp)) fs.unlinkSync(tmp); } catch { /* best effort */ }
-      throw e;
-    }
-    // Verify what landed on disk.
-    const written = fs.readFileSync(skillFile, 'utf8');
-    if (sha256(written) !== contentHash) {
-      throw new Error('Installed Skill file failed verification (content hash mismatch)');
-    }
-  } catch (e) {
-    if (e instanceof InstallNeedsConfirmation) throw e;
-    if (e instanceof ApiError) {
-      recordInstallFailure(applicationId, e.message);
-      throw e;
-    }
-    const msg = e instanceof Error ? e.message : String(e);
-    recordInstallFailure(applicationId, msg);
-    throw new ApiError(500, `Installation failed: ${msg}`);
-  }
-
-  const resumeVersion = (ctx.resume?.version as number | undefined) ?? null;
-  const ts = now();
-  const unchanged = previousContent !== null && sha256(previousContent) === contentHash;
-  transaction(() => {
-    if (previousContent !== null && !unchanged) {
-      recordSkillVersion(applicationId, name, skillFile, previousContent);
-    }
-    const prior = get<{ id: string; installed_at: string | null }>(
-      `SELECT id, installed_at FROM skills_sync WHERE application_id = ? AND skill_name = ?`,
-      applicationId,
-      name,
-    );
-    if (prior) {
-      run(
-        `UPDATE skills_sync SET skill_path = ?, status = 'installed', last_synced = ?, resume_version = ?, jd_hash = ?, content_hash = ?, version_number = version_number + 1, install_slug = ?, install_method = 'natively-auto', install_path = ?, installed_at = COALESCE(installed_at, ?), updated_at = ?, install_error = NULL, candidate_id = ? WHERE id = ?`,
-        skillFile,
-        ts,
-        resumeVersion,
-        jdHash,
-        contentHash,
-        slug,
-        skillFile,
-        ts,
-        ts,
-        String(ctx.app.candidate_id || ''),
-        prior.id,
-      );
-    } else {
-      run(
-        `INSERT INTO skills_sync (id, application_id, candidate_id, skill_name, skill_path, status, last_synced, resume_version, jd_hash, content_hash, version_number, install_slug, install_method, install_path, installed_at, updated_at) VALUES (?, ?, ?, ?, ?, 'installed', ?, ?, ?, ?, 1, ?, 'natively-auto', ?, ?, ?)`,
-        newId('sync_'),
-        applicationId,
-        String(ctx.app.candidate_id || ''),
-        name,
-        skillFile,
-        ts,
-        resumeVersion,
-        jdHash,
-        contentHash,
-        slug,
-        skillFile,
-        ts,
-        ts,
-      );
-    }
-  });
-
-  return {
-    status: 'installed',
-    slug,
-    skill_name: name,
-    skill_path: skillFile,
-    installed_at: ts,
-    updated_at: ts,
-    slash_command: `/${slug}`,
-    content_hash: contentHash,
-    truncated: built.truncated,
-    omitted_chars: built.omittedChars,
-    unchanged,
-    natively_dir: rootReal,
-    refresh_note: NATIVELY_REFRESH_NOTE,
-  };
+  return installPrebuiltSkill(applicationId, prepared.built.content, opts);
 }
 
 /**

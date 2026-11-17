@@ -1,6 +1,7 @@
 export const dynamic = 'force-dynamic';
 import { NextResponse } from 'next/server';
 import { resolveNativelySkillsDir, macosDefaultNativelySkillsDir } from '@/lib/files';
+import { getConfirmedNativelyDir, resolveInstallDir } from '@/lib/natively-install';
 import { handleError } from '@/lib/errors';
 
 /**
@@ -14,8 +15,13 @@ import { handleError } from '@/lib/errors';
 export async function GET() {
   try {
     const info = resolveNativelySkillsDir();
+    const confirmed = getConfirmedNativelyDir();
+    const installDir = resolveInstallDir();
     return NextResponse.json({
       ...info,
+      confirmed_natively_dir: confirmed?.dir ?? null,
+      confirmed_at: confirmed?.confirmedAt ?? null,
+      install_dir: installDir,
       macos_default: macosDefaultNativelySkillsDir(),
       env_var: 'NATIVELY_SKILLS_DIR',
       note: 'Installed means the SKILL.md file was written to this directory. It does not mean Natively has loaded or activated the Skill — bring Natively to the front; it re-reads the Skills folder when its window regains focus.',

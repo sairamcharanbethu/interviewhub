@@ -47,6 +47,12 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
+      <div className="rounded-lg border border-blue-200 bg-blue-50 p-5">
+        <h2 className="text-lg font-semibold">Prepare Interview</h2>
+        <p className="mt-1 text-sm text-gray-600">Upload a resume and a job description — get a candidate profile, role analysis, questions and answers, STAR drafts, and a Natively Skill installed, in one click.</p>
+        <Link href="/prepare"><Button className="mt-3">Prepare Interview →</Button></Link>
+      </div>
+
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-bold">Dashboard</h1>

@@ -419,3 +419,59 @@ info. Manual export unchanged as fallback.
   the front, confirm it appears in the Skills list). Live
   OpenRouter/Ollama NOT RUN (no key/Ollama here — provider tests are
   mocked).
+
+## Prepare Interview refactor (2026-11-17)
+
+- [x] **Provider layer** — `lib/ai/adapters.ts` (OpenRouter, Codex CLI,
+  Antigravity CLI, Ollama, template fallback), `lib/ai/cli.ts` (safe
+  subprocess runner, timeouts, output caps, per-provider semaphore),
+  `lib/ai/registry.ts` (stored priority, first-available selection,
+  `completeWithFallback` with failure classification, origin labelling).
+  AI Settings UI shows per-provider Installed/Authenticated/Available,
+  Test Connection, and priority up/down controls; OpenRouter key prompt
+  on first setup (encrypted storage, never logged).
+- [x] **AI-first extraction** — `lib/ai/extract.ts` (Zod
+  `CandidateProfile`/`JobAnalysis`, grounded evidence, heuristic fallback
+  labelled `fallback`, untrusted-data safeguards).
+- [x] **Candidate reuse** — `lib/prepare/candidate.ts` (normalized-email
+  exact match, new resume version on reuse, duplicate flag without merge,
+  blank-fill only).
+- [x] **Role insight** — `lib/prepare/prep-package.ts` (AI refinement on
+  by default in the job; score clamp deterministic / +10 with evidence
+  and recorded justification).
+- [x] **Prep package** — intro, 20–30 questions, evidence-grounded
+  answers, STAR drafts (verified=false), prioritised study guide; every
+  item records origin `ai`/`fallback`.
+- [x] **Firecrawl dossier** — `lib/company.ts` (public queries only,
+  7-day SQLite cache, graceful skip without a key, Skill research
+  instructions on failure).
+- [x] **Skill generation** — 15 sections appended to the existing Skill
+  builder; 100 KiB cap enforced by dropping lowest-priority sections
+  first, omitted sections recorded honestly.
+- [x] **Background orchestrator** — migration `004_prepare_jobs.sql`
+  (`preparation_jobs`, `company_dossiers`, `provider_priority`,
+  `confirmed_natively_dir`); `lib/prepare/job.ts` (atomic claim, stale
+  re-claim, idempotency, retry of failed/fallback stages only);
+  `lib/prepare/runner.ts` (singleton worker, stages 1–3 critical, 4–9
+  partial-tolerant, lazy start guarded out of tests and `next build`).
+- [x] **Unified API** — `POST /api/prepare`, `GET /api/prepare/[jobId]`,
+  `POST /api/prepare/[jobId]/retry`; existing routes untouched.
+- [x] **UI** — `/prepare` (upload + JD tabs + progress + results),
+  `/prepare/[jobId]`, dashboard hero, Shell primary nav = Prepare
+  Interview + Dashboard with the rest under "Advanced"; AI Settings
+  provider panel.
+- [x] **Natively confirmation persistence** — confirmed canonical dir in
+  `ai_settings`; job installs silently after one confirmation; unconfirmed
+  → install stage fails, job `partial`, results screen offers confirm +
+  install.
+- [x] **Tests** — `tests/unit/cli-providers.test.ts` (mocked CLI runner:
+  Codex/Antigravity auth, JSON parsing, timeout fall-through, fallback
+  origin), `tests/api/prepare.test.ts` (mocked registry: full flow, email
+  reuse + new version, no-email, duplicates flagged, Unknown labels, JD
+  URL failure, bad magic bytes, unconfirmed-dir partial + retry without
+  duplicates, candidate RAG isolation, malformed-AI fallback),
+  `tests/e2e/prepare-workflow.spec.ts` (Playwright, fallback path,
+  one-time Natively confirmation dialog, completion screen).
+- [ ] **Untested live** — Natively install on the user's Mac, Codex /
+  Antigravity auth on the user's Mac, live OpenRouter, live Firecrawl,
+  Docker build (no Docker here).

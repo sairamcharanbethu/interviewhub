@@ -1,5 +1,7 @@
+import { z } from 'zod';
 import { parseJD } from './parse/jd';
 import { chatForTask, isAiConfiguredFor, AI_TIMEOUT_MS, type ChatResult } from './ai/providers';
+import { completeJsonWithFallback } from './ai/registry';
 import { parseAiJson, isObjectArray } from './ai/json';
 import { SYSTEM_PROMPTS, labelAsData, stripPII, stripInjection } from './ai/prompts';
 import type { RagChunk } from './rag';
@@ -34,9 +36,8 @@ export async function generateQuestionsAI(
   opts: { chunks: RagChunk[]; redactPii: boolean },
 ): Promise<AiCallOutcome<PrepQuestion[]>> {
   const fallback = generateQuestions(jdText, company);
-  if (!isAiConfiguredFor('questions')) {
-    return { data: fallback, fallback: true, ai_error: 'No AI provider configured for questions' };
-  }
+  // No provider gate here: the registry tries OpenRouter > Codex >
+  // Antigravity > Ollama and returns the template fallback when none works.
   const jd = parseJD(jdText || '');
   const userPrompt = [
     labelAsData('resume-evidence', contextBlock(opts.chunks, opts.redactPii)),
@@ -45,16 +46,15 @@ export async function generateQuestionsAI(
     `Generate 12-16 interview questions covering these categories: ${PREP_CATEGORIES.join(', ')}. Base every question on the JD or the resume evidence above. Never invent experience for the candidate.`,
     `Reply with JSON ONLY, no other text: {"questions": [{"category": "<one of ${PREP_CATEGORIES.join(' | ')}>", "question": "<question text>", "source": "<JD keyword or resume evidence it is based on>"}]}`,
   ].join('\n\n');
-  let res: ChatResult;
-  try {
-    res = await chatForTask('questions', [
-      { role: 'system', content: SYSTEM_PROMPTS.questions },
-      { role: 'user', content: userPrompt },
-    ], AI_TIMEOUT_MS);
-  } catch (e) {
-    return { data: fallback, fallback: true, ai_error: `AI provider failed: ${e instanceof Error ? e.message : 'unknown error'}` };
+  const qSchema = z.object({ questions: z.array(z.object({ category: z.string(), question: z.string(), source: z.string().optional() })) });
+  const aiOut = await completeJsonWithFallback(`${SYSTEM_PROMPTS.questions}
+
+${userPrompt}`, qSchema);
+  if (aiOut.origin !== 'ai' || !aiOut.result) {
+    return { data: fallback, fallback: true, ai_error: `AI provider failed: ${aiOut.attempts.map((a) => `${a.provider}: ${a.message}`).join('; ')}` };
   }
-  const parsed = parseAiJson<{ questions?: unknown }>(res.text);
+  const res: ChatResult = { text: '', model: aiOut.model || aiOut.providerId, tokensIn: 0, tokensOut: 0 };
+  const parsed = aiOut.result.data as { questions?: unknown };
   if (!parsed || !isObjectArray(parsed.questions)) {
     return { data: fallback, fallback: true, ai_error: 'AI returned malformed JSON — used template fallback' };
   }
@@ -93,9 +93,7 @@ export async function draftAnswersAI(
     const d = draftAnswer(q.question, q.category || 'Behavioral', resumeText, opts.starStories);
     return { question: q.question, category: q.category || 'Behavioral', ...d };
   });
-  if (!isAiConfiguredFor('answers')) {
-    return { data: template, fallback: true, ai_error: 'No AI provider configured for answers' };
-  }
+  // No provider gate here: the registry falls back to the template drafter.
   const starBlock = opts.starStories.slice(0, 5).map((s, i) =>
     `Story ${i + 1} (${String(s.title || 'Untitled')}): Situation: ${String(s.situation || '')} Task: ${String(s.task || '')} Action: ${String(s.action || '')} Result: ${String(s.result || '')}`).join('\n');
   const userPrompt = [
@@ -105,29 +103,28 @@ export async function draftAnswersAI(
     questions.map((q, i) => `${i + 1}. [${q.category || 'Behavioral'}] ${stripInjection(q.question)}`).join('\n'),
     `Reply with JSON ONLY, no other text: {"answers": [{"question": "<exact question text>", "answer": "<first-person STAR answer, or 'Not demonstrated ...'>", "evidence": ["<short quote from the evidence above>"], "gaps": ["<what is not demonstrated, if any>"]}]}`,
   ].join('\n\n');
-  let res: ChatResult;
-  try {
-    res = await chatForTask('answers', [
-      { role: 'system', content: SYSTEM_PROMPTS.answers },
-      { role: 'user', content: userPrompt },
-    ], AI_TIMEOUT_MS);
-  } catch (e) {
-    return { data: template, fallback: true, ai_error: `AI provider failed: ${e instanceof Error ? e.message : 'unknown error'}` };
+  const aSchema = z.object({ answers: z.array(z.object({ question: z.string(), answer: z.string(), evidence: z.array(z.string()).optional(), gaps: z.array(z.string()).optional() })) });
+  const aiOut = await completeJsonWithFallback(`${SYSTEM_PROMPTS.answers}
+
+${userPrompt}`, aSchema);
+  if (aiOut.origin !== 'ai' || !aiOut.result) {
+    return { data: template, fallback: true, ai_error: `AI provider failed: ${aiOut.attempts.map((a) => `${a.provider}: ${a.message}`).join('; ')}` };
   }
-  const parsed = parseAiJson<{ answers?: unknown }>(res.text);
+  const res: ChatResult = { text: '', model: aiOut.model || aiOut.providerId, tokensIn: 0, tokensOut: 0 };
+  const parsed = aiOut.result.data as { answers?: unknown };
   if (!parsed || !isObjectArray(parsed.answers)) {
     return { data: template, fallback: true, ai_error: 'AI returned malformed JSON — used template fallback' };
   }
   const byQuestion = new Map<string, Record<string, unknown>>();
   for (const a of parsed.answers) byQuestion.set(String(a.question || '').trim().toLowerCase(), a);
-  const out: AiDraftedAnswer[] = questions.map((q, i) => {
+  const drafted: AiDraftedAnswer[] = questions.map((q, i) => {
     const ai = byQuestion.get(q.question.trim().toLowerCase());
     if (!ai || typeof ai.answer !== 'string' || !ai.answer.trim()) return template[i];
     const evidence = Array.isArray(ai.evidence) ? (ai.evidence as unknown[]).filter((e) => typeof e === 'string').map((e) => (e as string).slice(0, 400)) : template[i].evidence;
     const gaps = Array.isArray(ai.gaps) ? (ai.gaps as unknown[]).filter((g) => typeof g === 'string').map((g) => (g as string).slice(0, 300)) : template[i].gaps;
     return { question: q.question, category: q.category || 'Behavioral', answer: stripInjection(ai.answer.trim()).slice(0, 4000), evidence, gaps };
   });
-  return { data: out, fallback: false, ai_usage: { model: res.model, tokens_in: res.tokensIn, tokens_out: res.tokensOut } };
+  return { data: drafted, fallback: false, ai_usage: { model: res.model, tokens_in: res.tokensIn, tokens_out: res.tokensOut } };
 }
 
 export interface StarDraft {

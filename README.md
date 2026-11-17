@@ -238,3 +238,40 @@ extracting the Node headers with `EPERM: fchown` (sandbox blocks chown),
 pre-extract the headers and point node-gyp at them:
 `curl -sL https://nodejs.org/dist/v24.22.1/node-v24.22.1-headers.tar.gz | tar --no-same-owner -xz -C /tmp`
 then `npm_config_nodedir=/tmp/node-v24.22.1 npm install`.
+
+## Prepare Interview (one-click, 2026-11-17)
+
+**Dashboard → Prepare Interview** (or `/prepare`): upload a resume
+(PDF/DOCX/TXT/MD) and a job description (paste text, URL, or file), click
+**Prepare Interview**. InterviewHub runs a background job — candidate
+profile (AI extraction with heuristic fallback), role analysis, ~20–30
+questions with evidence-grounded answers, STAR drafts (unverified),
+study guide, company research, and a Natively Skill — then installs it
+into Natively. Progress is polled live; results show the match score,
+question/STAR counts, install status, and the next step
+("Open Natively and use /<slug>").
+
+- **No AI provider is required.** Providers are tried in priority order
+  (OpenRouter → Codex CLI → Antigravity CLI → Ollama → template fallback),
+  changeable in AI Settings. Everything generated records whether it came
+  from AI or the labelled template fallback.
+- **Setup:** OpenRouter key once in AI Settings (encrypted at rest);
+  for the CLI backends, `codex login` (ChatGPT subscription) and/or sign in
+  to the Antigravity app on the Mac. Confirm Natively's Skills directory
+  once on first Prepare.
+- **Company research** uses Firecrawl when `FIRECRAWL_API_KEY` is set in
+  the environment (7-day cache); otherwise the Skill carries research
+  instructions and the job still completes.
+- API: `POST /api/prepare` → `{jobId, status:'queued'}`;
+  `GET /api/prepare/[jobId]` (status/stage/progress/origins/install info);
+  `POST /api/prepare/[jobId]/retry` (failed/fallback stages only, no
+  duplicates). See `ARCHITECTURE.md` for the stage list, idempotency, and
+  the local-first constraint (progress advances only while the server runs).
+
+## Untested live (honest status)
+
+These are mocked or skipped in tests and need a live check on the user's
+Mac: Natively auto-install into the real Skills directory, Codex CLI
+(`codex login`) and Antigravity (`agy`) authentication, live OpenRouter
+calls, and live Firecrawl company research. Docker build was not run here
+(no Docker in this environment).

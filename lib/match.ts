@@ -1,7 +1,8 @@
+import { z } from 'zod';
 import { parseJson } from './db';
 import { parseJD } from './parse/jd';
-import { chatForTask, isAiConfiguredFor, type ChatResult } from './ai/providers';
-import { parseAiJson } from './ai/json';
+import { completeJsonWithFallback } from './ai/registry';
+import { isAiConfiguredFor, type ChatResult } from './ai/providers';
 import { SYSTEM_PROMPTS, labelAsData, stripPII, stripInjection } from './ai/prompts';
 import type { RagChunk } from './rag';
 
@@ -91,9 +92,8 @@ export async function refineMatchWithAI(
   heuristic: MatchResult,
   opts: { resumeChunks: RagChunk[]; jdText: string; jdParsedRaw: string | null; redactPii: boolean },
 ): Promise<AiRefineOutcome> {
-  if (!isAiConfiguredFor('match')) {
-    return { result: heuristic, ai_refined: false, ai_error: 'No AI provider configured for matching' };
-  }
+  // No provider gate here: the registry tries every configured provider in
+  // priority order and the heuristic stands when none is available.
   const contextText = opts.resumeChunks.map((c) => c.chunk_text).join('\n---\n');
   const jd = opts.jdParsedRaw ? parseJson<ReturnType<typeof parseJD> | null>(opts.jdParsedRaw, null) ?? parseJD(opts.jdText || '') : parseJD(opts.jdText || '');
   const requirements = heuristic.requirements.map((r) => r.requirement);
@@ -106,20 +106,29 @@ export async function refineMatchWithAI(
     `Reply with JSON ONLY, no other text: {"assessments": [{"requirement": "<exact requirement string>", "demonstrated": true|false, "evidence": "<short quote or paraphrase drawn ONLY from the resume evidence above, or 'Not demonstrated'"}]}`,
     `Rules: only mark demonstrated when the resume evidence above actually shows it. Never invent a skill, metric, project, or employer. If the evidence does not show it, demonstrated=false and evidence='Not demonstrated'.`,
   ].join('\n\n');
-  let chatResult: ChatResult;
-  try {
-    chatResult = await chatForTask('match', [
-      { role: 'system', content: SYSTEM_PROMPTS.match },
-      { role: 'user', content: userPrompt },
-    ]);
-  } catch (e) {
-    return { result: heuristic, ai_refined: false, ai_error: `AI provider failed: ${e instanceof Error ? e.message : 'unknown error'}` };
+  // AI refinement goes through the provider registry (OpenRouter > Codex >
+  // Antigravity > Ollama, then deterministic fallback) — never the old
+  // two-provider route alone.
+  const assessmentSchema = z.object({
+    assessments: z.array(z.object({
+      requirement: z.string(),
+      demonstrated: z.boolean(),
+      evidence: z.string(),
+    })),
+  });
+  const sysPrompt = `${SYSTEM_PROMPTS.match}
+Reply with JSON only, matching the schema.`;
+  const out = await completeJsonWithFallback(`${sysPrompt}
+
+${userPrompt}`, assessmentSchema);
+  if (out.origin !== 'ai' || !out.result) {
+    return { result: heuristic, ai_refined: false, ai_error: `AI providers failed (${out.attempts.map((a) => `${a.provider}: ${a.message}`).join('; ')}) — kept heuristic result` };
   }
-  const parsed = parseAiJson<{ assessments?: unknown }>(chatResult.text);
-  const assessments = parsed && Array.isArray(parsed.assessments) ? parsed.assessments : null;
-  if (!assessments) {
+  const assessments = (out.result.data as { assessments: unknown[] }).assessments;
+  if (!Array.isArray(assessments)) {
     return { result: heuristic, ai_refined: false, ai_error: 'AI returned malformed JSON — kept heuristic result' };
   }
+  const chatResult: ChatResult = { text: '', model: out.model || out.providerId, tokensIn: 0, tokensOut: 0 };
   const contextHay = contextText.toLowerCase();
   const byReq = new Map<string, AiAssessment>();
   for (const a of assessments) {

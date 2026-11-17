@@ -74,6 +74,7 @@ export default function AiSettingsPage() {
   const [ollamaModelsError, setOllamaModelsError] = useState('');
   const [testResult, setTestResult] = useState<{ provider: string; ok: boolean; detail: string; models?: string[] } | null>(null);
   const [testing, setTesting] = useState('');
+  const [providerPriority, setProviderPriority] = useState<string[]>(['openrouter', 'codex', 'antigravity', 'ollama', 'fallback']);
 
   const loadModels = async () => {
     // Graceful failure: a provider being unreachable must not block the page.
@@ -110,6 +111,7 @@ export default function AiSettingsPage() {
       setDefaultProvider(a.ai_settings.default_provider || 'ollama');
       setFallbackModel(a.ai_settings.fallback_model || '');
       setRouting(toRouteMap(a.ai_settings.routing, a.ai_settings.default_provider || 'ollama'));
+      if (a.ai_settings.provider_priority?.length) setProviderPriority(a.ai_settings.provider_priority);
       setUsage(u.usage); setTotalCost(u.total_cost_usd); setUsageCount(u.count);
       void loadModels();
     } catch (e) { setError(errMsg(e)); } finally { setLoading(false); }
@@ -122,6 +124,7 @@ export default function AiSettingsPage() {
       const body: Record<string, unknown> = {
         openrouter_model: openrouterModel, ollama_base_url: ollamaBase, ollama_model: ollamaModel,
         default_provider: defaultProvider, routing, fallback_model: fallbackModel || null,
+        provider_priority: providerPriority,
       };
       if (clearKey) body.openrouter_key = '';
       else if (keyInput.trim()) body.openrouter_key = keyInput.trim();
@@ -131,7 +134,7 @@ export default function AiSettingsPage() {
       toast('AI settings saved');
     } catch (e) { toast(errMsg(e), 'err'); } finally { setSaving(false); }
   };
-  const test = async (provider: 'openrouter' | 'ollama') => {
+  const test = async (provider: string) => {
     setTesting(provider); setTestResult(null);
     try {
       const r = await apiPost<{ provider: string; ok: boolean; detail: string; models?: string[] }>('/api/ai-settings/test', { provider });
@@ -146,6 +149,31 @@ export default function AiSettingsPage() {
   return (
     <div className="space-y-6">
       <h1 className="text-2xl font-bold">AI Settings</h1>
+      <Card>
+        <h2 className="font-semibold">Provider status &amp; priority</h2>
+        <p className="mt-1 text-sm text-gray-500">Preparation tries providers in this order and falls back to the deterministic template (labelled) when none is available. Use the arrows to change the order, then save.</p>
+        <ul className="mt-3 space-y-2">
+          {providerPriority.map((id, i) => {
+            const st = s.providers?.find((p) => p.id === id);
+            const label = st?.name || id;
+            return (
+              <li key={id} className="flex flex-wrap items-center gap-2 rounded border border-gray-200 p-2 text-sm">
+                <span className="font-medium">{i + 1}. {label}</span>
+                <Badge tone={st?.available ? 'green' : 'gray'}>{st?.available ? 'Available' : 'Unavailable'}</Badge>
+                <Badge tone={st?.installed ? 'blue' : 'gray'}>{st?.installed ? 'Installed' : 'Not installed'}</Badge>
+                <Badge tone={st?.authenticated ? 'green' : 'gray'}>{st?.authStatus === 'authenticated' ? 'Authenticated' : st?.authStatus === 'not_authenticated' ? 'Not authenticated' : 'Not verified'}</Badge>
+                {st?.detail ? <span className="text-xs text-gray-500">{st.detail}</span> : null}
+                <span className="ml-auto flex gap-1">
+                  <Button variant="secondary" onClick={() => { if (i > 0) { const p = [...providerPriority]; [p[i - 1], p[i]] = [p[i], p[i - 1]]; setProviderPriority(p); } }} disabled={i === 0}>↑</Button>
+                  <Button variant="secondary" onClick={() => { if (i < providerPriority.length - 1) { const p = [...providerPriority]; [p[i + 1], p[i]] = [p[i], p[i + 1]]; setProviderPriority(p); } }} disabled={i === providerPriority.length - 1}>↓</Button>
+                  {id !== 'fallback' ? <Button variant="secondary" onClick={() => void test(id)} disabled={!!testing}>{testing === id ? 'Testing…' : 'Test connection'}</Button> : null}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+        {!s.has_openrouter_key ? <p className="mt-3 text-sm text-amber-700">No OpenRouter key saved yet — set one below on first setup (stored encrypted). Preparation still works with Codex, Antigravity, or Ollama when one of those is authenticated, and always works with the labelled template fallback.</p> : null}
+      </Card>
       <Card>
         <h2 className="font-semibold">Providers</h2>
         <div className="mt-4 grid gap-4 sm:grid-cols-2">
